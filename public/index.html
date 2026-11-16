@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>local-ai-jay</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="logo" aria-hidden="true">◆</span> local-ai-jay <span class="ver" id="ver"></span></div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="playground" class="active">Playground</button>
+      <button role="tab" data-tab="providers">Providers</button>
+      <button role="tab" data-tab="usage">Usage</button>
+      <button role="tab" data-tab="connect">Connect</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Sign in (only when the key isn't known) -->
+    <section id="signin" class="panel narrow" hidden>
+      <h1>Enter your API key</h1>
+      <p class="muted">Run <code>npx local-ai-jay key</code> in a terminal to see the console link and key.</p>
+      <form id="signin-form" class="row">
+        <input id="signin-key" type="password" placeholder="jay-…" autocomplete="off" required>
+        <button class="primary" type="submit">Open console</button>
+      </form>
+      <p id="signin-error" class="error" hidden></p>
+    </section>
+
+    <!-- Playground -->
+    <section id="tab-playground" class="tab-panel">
+      <div class="pg-bar">
+        <label class="field">
+          <span>Model</span>
+          <select id="pg-model"></select>
+        </label>
+        <button id="pg-system-toggle" class="ghost" type="button">System prompt</button>
+        <span class="spacer"></span>
+        <button id="pg-new" class="ghost" type="button">New chat</button>
+      </div>
+      <textarea id="pg-system" class="system" rows="3" placeholder="Optional instructions for the model…" hidden></textarea>
+      <div id="pg-log" class="chat" aria-live="polite">
+        <div class="empty" id="pg-empty">
+          <div class="empty-mark">◆</div>
+          <p>Chat with any of your tools. Pick a model, or leave it on <b>auto</b> to use the first one that's ready.</p>
+        </div>
+      </div>
+      <form id="pg-form" class="composer">
+        <textarea id="pg-input" rows="2" placeholder="Message…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="pg-send" class="primary" type="submit">Send</button>
+        <button id="pg-stop" class="danger" type="button" hidden>Stop</button>
+      </form>
+    </section>
+
+    <!-- Providers -->
+    <section id="tab-providers" class="tab-panel" hidden>
+      <div class="section-head">
+        <div>
+          <h1>Providers</h1>
+          <p class="muted">Your own tools and keys. Nothing runs until you use it, and <b>Test</b> sends one tiny chat.</p>
+        </div>
+        <button id="prov-refresh" class="ghost" type="button">Re-check</button>
+      </div>
+      <h2 class="group">On this computer</h2>
+      <div id="prov-local" class="cards"></div>
+      <h2 class="group">Cloud APIs <span class="muted small">(optional: keys are checked with the provider, then stored only on this computer)</span></h2>
+      <div id="prov-cloud" class="cards"></div>
+    </section>
+
+    <!-- Usage -->
+    <section id="tab-usage" class="tab-panel" hidden>
+      <div class="section-head">
+        <div>
+          <h1>Usage</h1>
+          <p class="muted">Counted on this computer. Chats still count against each provider's own plan.</p>
+        </div>
+        <button id="usage-reset" class="ghost" type="button">Reset</button>
+      </div>
+      <div class="tiles" id="usage-tiles"></div>
+      <div class="card">
+        <h2>Requests, last 14 days</h2>
+        <div id="usage-chart" class="bars"></div>
+      </div>
+      <div class="card">
+        <h2>By provider</h2>
+        <div class="table-wrap"><table id="usage-table"></table></div>
+      </div>
+      <div class="card">
+        <h2>Recent requests</h2>
+        <div class="table-wrap"><table id="recent-table"></table></div>
+      </div>
+    </section>
+
+    <!-- Connect -->
+    <section id="tab-connect" class="tab-panel" hidden>
+      <h1>Connect your apps</h1>
+      <p class="muted">Anything that speaks the OpenAI API works: set the base URL and key below. Model names look like <code>claude-code/sonnet</code>, <code>ollama/llama3.2</code> or <code>auto</code>.</p>
+      <div class="card kv">
+        <div><span>Base URL</span><code id="c-base"></code><button class="ghost small copy" data-copy="c-base">Copy</button></div>
+        <div><span>API key</span><code id="c-key" class="secret"></code><button class="ghost small" id="c-reveal">Show</button><button class="ghost small copy" data-copy-key>Copy</button></div>
+      </div>
+      <div class="snips">
+        <div class="snip-tabs" role="tablist">
+          <button class="active" data-snip="curl">curl</button>
+          <button data-snip="python">Python</button>
+          <button data-snip="node">Node</button>
+          <button data-snip="env">Env vars</button>
+        </div>
+        <pre id="snip"><code></code></pre>
+        <button class="ghost small copy" id="snip-copy">Copy</button>
+      </div>
+      <div class="card">
+        <h2>How the CLIs run</h2>
+        <dl id="c-settings" class="settings"></dl>
+        <p class="muted small">Change these when starting: <code>--allow &lt;dir&gt;</code>, <code>--allow-edits</code>, <code>--read-only</code>, <code>--cors</code>. A request can pick a folder with a <code>workdir</code> field (or <code>X-Workdir</code> header) inside an allowed folder.</p>
+      </div>
+      <p class="muted small"><button class="link" id="signout" type="button">Forget the key in this browser</button></p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

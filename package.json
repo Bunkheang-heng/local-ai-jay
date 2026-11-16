@@ -1,0 +1,45 @@
+{
+  "name": "local-ai-jay",
+  "version": "0.1.0",
+  "description": "One local, OpenAI-compatible API and console in front of your own AI tools: Claude Code, Codex, Gemini CLI, Ollama, LM Studio and your cloud API keys. Pure Node, zero dependencies.",
+  "type": "module",
+  "bin": {
+    "local-ai-jay": "bin/cli.js"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "ai",
+    "gateway",
+    "openai-compatible",
+    "local",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "ollama",
+    "lm-studio",
+    "groq",
+    "cerebras",
+    "openrouter",
+    "llm",
+    "proxy"
+  ],
+  "author": "bunkheangheng",
+  "license": "MIT"
+}
