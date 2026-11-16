@@ -162,7 +162,12 @@ async function cmdStart(values) {
   };
 
   const gateway = createGateway({ config, store, registry, paths, version: pkg.version, log });
-  const { server, port } = await listen(gateway.handler, { port: config.port, tryNext: !explicitPort });
+  // When other devices connect (--host), the port must stay put: never drift to the next free one.
+  const { server, port } = await listen(gateway.handler, { port: config.port, tryNext: !explicitPort && !config.hosts.length })
+    .catch((err) => {
+      if (err.code === 'EADDRINUSE') throw new Error(`Port ${config.port} is already in use by another program. Pick another with --port <n>.`);
+      throw err;
+    });
   const url = consoleUrl(port, config.apiKey);
   const extra = listenExtra(gateway.handler, {
     port,
