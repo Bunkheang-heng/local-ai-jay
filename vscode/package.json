@@ -1,0 +1,125 @@
+{
+  "name": "local-ai-jay",
+  "displayName": "local-ai-jay",
+  "description": "Chat with your own AI tools (Claude Code, Codex, Gemini CLI, Ollama, LM Studio, your API keys) from a VS Code sidebar, through the local-ai-jay gateway.",
+  "version": "0.1.0",
+  "publisher": "bunkheangheng",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bunkheang-heng/local-ai-jay.git",
+    "directory": "vscode"
+  },
+  "homepage": "https://github.com/Bunkheang-heng/local-ai-jay/tree/main/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/Bunkheang-heng/local-ai-jay/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "chat",
+    "claude code",
+    "codex",
+    "gemini",
+    "ollama",
+    "lm studio",
+    "local"
+  ],
+  "icon": "media/icon.png",
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "localAiJay",
+          "title": "local-ai-jay",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "localAiJay": [
+        {
+          "type": "webview",
+          "id": "localAiJay.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "localAiJay.focus", "title": "Open Chat", "category": "local-ai-jay" },
+      { "command": "localAiJay.newChat", "title": "New Chat", "category": "local-ai-jay", "icon": "$(add)" },
+      { "command": "localAiJay.askSelection", "title": "Ask About Selection", "category": "local-ai-jay" },
+      { "command": "localAiJay.explainSelection", "title": "Explain Selection", "category": "local-ai-jay" },
+      { "command": "localAiJay.fixSelection", "title": "Find Problems in Selection", "category": "local-ai-jay" },
+      { "command": "localAiJay.startGateway", "title": "Start the Gateway", "category": "local-ai-jay" },
+      { "command": "localAiJay.openConsole", "title": "Open the Web Console", "category": "local-ai-jay" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "submenu": "localAiJay.editor", "when": "editorHasSelection", "group": "navigation@90" }
+      ],
+      "localAiJay.editor": [
+        { "command": "localAiJay.askSelection", "group": "1@1" },
+        { "command": "localAiJay.explainSelection", "group": "1@2" },
+        { "command": "localAiJay.fixSelection", "group": "1@3" }
+      ]
+    },
+    "submenus": [
+      { "id": "localAiJay.editor", "label": "local-ai-jay" }
+    ],
+    "keybindings": [
+      { "command": "localAiJay.focus", "key": "ctrl+alt+j", "mac": "cmd+alt+j" },
+      { "command": "localAiJay.askSelection", "key": "ctrl+alt+k", "mac": "cmd+alt+k", "when": "editorTextFocus && editorHasSelection" }
+    ],
+    "configuration": {
+      "title": "local-ai-jay",
+      "properties": {
+        "localAiJay.url": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Gateway address, e.g. `http://127.0.0.1:3000`. Leave empty to find it on this computer automatically."
+        },
+        "localAiJay.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Gateway API key. Leave empty to read it from `~/.local-ai-jay/config.json`. Only needed for a gateway on another machine."
+        },
+        "localAiJay.home": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "local-ai-jay data folder, if you moved it with `LOCAL_AI_JAY_HOME`."
+        },
+        "localAiJay.useWorkspaceFolder": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run CLI tools (Claude Code, Codex, …) inside the open workspace folder so they can read your project. The gateway must allow the folder: `npx local-ai-jay --allow <folder>`."
+        },
+        "localAiJay.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Instructions sent at the start of every chat."
+        },
+        "localAiJay.startCommand": {
+          "type": "string",
+          "default": "npx -y local-ai-jay",
+          "description": "Command the \"Start the Gateway\" button runs in a terminal."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "sync": "node scripts/sync.js",
+    "vscode:prepublish": "node scripts/sync.js",
+    "package": "npx -y @vscode/vsce package --no-dependencies"
+  }
+}

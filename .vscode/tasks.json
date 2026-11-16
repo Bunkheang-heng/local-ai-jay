@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Sync extension markdown",
+      "type": "shell",
+      "command": "node vscode/scripts/sync.js",
+      "presentation": { "reveal": "silent" }
+    }
+  ]
+}

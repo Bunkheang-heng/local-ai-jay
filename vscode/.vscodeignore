@@ -1,0 +1,4 @@
+scripts/**
+**/*.map
+.vscode/**
+*.vsix

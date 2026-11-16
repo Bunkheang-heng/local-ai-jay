@@ -2,7 +2,7 @@
 
 **One local, OpenAI-compatible API and console in front of your own AI tools:** Claude Code, Codex,
 Gemini CLI, Antigravity, Ollama, LM Studio, and (optionally) your Groq, Cerebras, Google AI Studio, OpenRouter,
-Mistral, DeepSeek and OpenAI keys.
+Mistral, DeepSeek, SEA-LION and OpenAI keys.
 
 ```bash
 npx local-ai-jay
@@ -39,7 +39,7 @@ OpenAI client can use. Press Ctrl+C to stop.
 | Antigravity | `agy` headless (stream-json over stdin), as you | `antigravity`, `antigravity/<model>` (listed live from `agy models`, e.g. `antigravity/claude-sonnet-4-6`) |
 | Ollama | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | `ollama/<model>`, e.g. `ollama/llama3.2` |
 | LM Studio | `http://127.0.0.1:1234` (or `$LMSTUDIO_BASE_URL`) | `lmstudio/<model>` |
-| Groq, Cerebras, Google AI Studio, OpenRouter, Mistral, DeepSeek, OpenAI | your API key | `groq/llama-3.3-70b-versatile`, `openrouter/<vendor>/<model>`, … |
+| Groq, Cerebras, Google AI Studio, OpenRouter, Mistral, DeepSeek, SEA-LION, OpenAI | your API key(s) | `groq/llama-3.3-70b-versatile`, `openrouter/<vendor>/<model>`, … |
 | Gemini website *(opt-in, see below)* | gemini.google.com in a real browser | `gemini-web` |
 
 `GET /v1/models` lists everything that's ready right now.
@@ -67,13 +67,23 @@ npx local-ai-jay ask -m gemini-web "Explain DNS like I'm five"
 
 ## The console
 
-`http://127.0.0.1:3000` has four pages:
+`http://127.0.0.1:3000` opens a chat app with a sidebar:
 
-- **Playground:** chat with any model, with streaming, a system prompt, the model's thinking, timing and token counts.
+- **Chats:** chat with any model, with streaming, Markdown and code blocks, the model's thinking,
+  timing and token counts, a per-chat system prompt, and copy, edit and retry. Your chats are kept
+  in **Recents**, saved only in that browser.
 - **Providers:** what's installed and ready; **Test** (sends one tiny chat), **Pause/Resume**, and
-  **API keys** for cloud providers (checked with the provider before saving, shown only masked, can be switched off or removed).
+  **API keys** for cloud providers: paste one or several (one per line). Each is checked with the
+  provider before saving and only ever shown masked. Several keys take turns, and a key that hits
+  its rate limit rests while the next one answers. Each key can be switched off or removed.
 - **Usage:** requests, errors, tokens and time per provider and per day, plus a live list of recent requests.
 - **Connect:** base URL, key, and ready-to-copy snippets for curl, Python, Node and env vars.
+
+## VS Code extension
+
+The [`vscode/`](vscode/) folder has a VS Code extension with the same chat in the sidebar. It finds the
+gateway on this computer by itself, can start it in a terminal, sends your selection or current file with a
+question, and puts code from replies straight into the editor. See [vscode/README.md](vscode/README.md).
 
 ## Use it from your other devices (Tailscale)
 
@@ -163,7 +173,7 @@ npx local-ai-jay ask "<prompt>"      # one answer in the terminal, no server
 
 Everything lives in `~/.local-ai-jay` (or `$LOCAL_AI_JAY_HOME`): `config.json` (your key and settings),
 `state/state.json` (pauses, provider keys, usage), `logs/requests.log`, `workspace/`. You can also put
-`NAME=value` lines (like `GROQ_API_KEY=…`) in `~/.local-ai-jay/env`. To remove everything, delete the folder.
+`NAME=value` lines (like `GROQ_API_KEY=…`, or several keys comma-separated) in `~/.local-ai-jay/env`. To remove everything, delete the folder.
 
 Custom CLI locations: `LOCAL_AI_JAY_CLAUDE_BIN`, `LOCAL_AI_JAY_CODEX_BIN`, `LOCAL_AI_JAY_GEMINI_BIN`,
 `LOCAL_AI_JAY_ANTIGRAVITY_BIN`.

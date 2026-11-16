@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { readJson, writeJsonSecure, maskSecret, localDay } from './util.js';
+
+const newKeyId = () => crypto.randomBytes(5).toString('hex');
 
 const KEEP_DAYS = 90;
 
@@ -37,35 +40,66 @@ export class Store {
     this.save();
   }
 
-  // ---- provider keys ----
+  // ---- provider keys (several per provider; they take turns) ----
+  #entries(id) {
+    let list = this.data.keys[id];
+    if (!list) return [];
+    if (!Array.isArray(list)) {
+      // Older single-key format: { value, enabled, addedAt }
+      list = list.value ? [{ id: newKeyId(), value: list.value, enabled: list.enabled !== false, addedAt: list.addedAt }] : [];
+      this.data.keys[id] = list;
+    }
+    return list;
+  }
+
+  /** Enabled key values, in the order they were added. */
+  getKeys(id) {
+    return this.#entries(id).filter((k) => k.enabled !== false).map((k) => k.value);
+  }
+
   getKey(id) {
-    const k = this.data.keys[id];
-    return k && k.enabled !== false ? k.value : null;
+    return this.getKeys(id)[0] ?? null;
   }
 
+  /** Raw entries for the server (values included; never send these to the console). */
+  keyEntries(id) {
+    return this.#entries(id).map((k) => ({ ...k }));
+  }
+
+  /** What the console may see: masked values only. */
   keyInfo(id) {
-    const k = this.data.keys[id];
-    if (!k) return null;
-    return { masked: maskSecret(k.value), enabled: k.enabled !== false, addedAt: k.addedAt };
+    const list = this.#entries(id);
+    if (!list.length) return null;
+    return list.map((k) => ({ id: k.id, masked: maskSecret(k.value), enabled: k.enabled !== false, addedAt: k.addedAt }));
   }
 
-  setKey(id, value) {
-    this.data.keys[id] = { value, enabled: true, addedAt: new Date().toISOString() };
-    this.saveNow();
-  }
-
-  setKeyEnabled(id, enabled) {
-    if (!this.data.keys[id]) return false;
-    this.data.keys[id].enabled = !!enabled;
+  /** Adds a key; returns false if that exact key is already saved. */
+  addKey(id, value) {
+    const list = this.#entries(id);
+    if (list.some((k) => k.value === value)) return false;
+    list.push({ id: newKeyId(), value, enabled: true, addedAt: new Date().toISOString() });
+    this.data.keys[id] = list;
     this.saveNow();
     return true;
   }
 
-  removeKey(id) {
-    const had = !!this.data.keys[id];
-    delete this.data.keys[id];
+  /** Switches one key (keyId) or all of a provider's keys on or off. */
+  setKeyEnabled(id, enabled, keyId = null) {
+    const list = this.#entries(id).filter((k) => !keyId || k.id === keyId);
+    if (!list.length) return false;
+    for (const k of list) k.enabled = !!enabled;
     this.saveNow();
-    return had;
+    return true;
+  }
+
+  /** Removes one key (keyId) or all of a provider's keys. */
+  removeKey(id, keyId = null) {
+    const list = this.#entries(id);
+    const keep = keyId ? list.filter((k) => k.id !== keyId) : [];
+    const removed = list.length - keep.length;
+    if (keep.length) this.data.keys[id] = keep; else delete this.data.keys[id];
+    this.saveNow();
+    return removed > 0;
   }
 
   // ---- usage ----

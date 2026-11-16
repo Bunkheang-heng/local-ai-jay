@@ -217,25 +217,33 @@ test('OpenAI-compatible providers are proxied (tools etc. pass through)', async 
   } finally { g.server.close(); }
 });
 
-test('cloud key is validated before saving and only shown masked', async () => {
+test('cloud keys: checked before saving, several at once, only shown masked', async () => {
+  let storeRef;
   const prov = createOpenAICompatProvider(
     { id: 'cloudy', label: 'Cloudy', baseUrl: upstreamUrl, envKey: 'CLOUDY_TEST_KEY' },
-    { getKey: (id) => storeRef.getKey(id) },
+    { getKeys: (id) => storeRef.getKeys(id) },
   );
-  let storeRef;
   const g = await startGateway([prov]);
   storeRef = g.store;
   try {
     let p = (await (await g.call('/api/providers')).json()).providers[0];
     assert.equal(p.state, 'no_key');
-    const put = await g.call('/api/providers/cloudy/key', { method: 'PUT', body: JSON.stringify({ key: 'sk-test-1234567890' }) });
+    const put = await g.call('/api/providers/cloudy/key', { method: 'PUT', body: JSON.stringify({ keys: ['sk-test-1234567890', 'sk-test-abcdefghij', 'sk-test-1234567890', 'bad'] }) });
     p = await put.json();
     assert.equal(put.status, 200);
     assert.equal(p.state, 'ready');
-    assert.equal(p.key.masked, 'sk-t…7890');
-    assert.doesNotMatch(JSON.stringify(p), /sk-test-1234567890/);
+    assert.deepEqual(p.key.map((k) => k.masked), ['sk-t…7890', 'sk-t…ghij']);
+    assert.deepEqual(p.results.map((r) => r.ok), [true, true, false]);
+    assert.doesNotMatch(JSON.stringify(p), /sk-test-1234567890|sk-test-abcdefghij/);
+    assert.match(p.detail, /2 keys/);
+
+    p = await (await g.call(`/api/providers/cloudy/key/${p.key[0].id}`, { method: 'POST', body: JSON.stringify({ enabled: false }) })).json();
+    assert.deepEqual(p.key.map((k) => k.enabled), [false, true]);
+    p = await (await g.call(`/api/providers/cloudy/key/${p.key[0].id}`, { method: 'DELETE' })).json();
+    assert.equal(p.key.length, 1);
     p = await (await g.call('/api/providers/cloudy/key', { method: 'DELETE' })).json();
     assert.equal(p.state, 'no_key');
+    assert.equal((await g.call('/api/providers/cloudy/key', { method: 'PUT', body: JSON.stringify({ key: 'x' }) })).status, 400);
   } finally { g.server.close(); }
 });
 

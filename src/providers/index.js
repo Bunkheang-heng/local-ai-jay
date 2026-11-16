@@ -4,7 +4,7 @@ import { createWebProvider, WEB_SITES } from '../web/provider.js';
 
 /** Every provider local-ai-jay knows about, in display order. */
 export function createRegistry({ store, env = process.env, fetchImpl, config, getBrowser } = {}) {
-  const getKey = (id) => store?.getKey(id) ?? null;
+  const getKeys = (id) => store?.getKeys(id) ?? [];
   const web = getBrowser
     ? WEB_SITES.map((site) => createWebProvider(site, {
       getBrowser,
@@ -17,8 +17,8 @@ export function createRegistry({ store, env = process.env, fetchImpl, config, ge
     createCliProvider(codexSpec, { env }),
     createCliProvider(geminiSpec, { env }),
     createCliProvider(antigravitySpec, { env }),
-    ...localSpecs(env).map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
-    ...CLOUD_SPECS.map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
+    ...localSpecs(env).map((s) => createOpenAICompatProvider(s, { getKeys, fetchImpl })),
+    ...CLOUD_SPECS.map((s) => createOpenAICompatProvider(s, { getKeys, fetchImpl })),
     ...web,
   ];
   return registryFrom(providers);

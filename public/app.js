@@ -1,4 +1,7 @@
 // local-ai-jay console. Plain JS, no build step.
+import { renderMarkdown as renderMd } from './markdown.js';
+import { createModelMenu } from './model-menu.js';
+
 const KEY_STORE = 'local-ai-jay.key';
 const CHATS_STORE = 'local-ai-jay.chats';
 const MAX_CHATS = 60;
@@ -146,136 +149,13 @@ function updateTitle() {
   document.title = t ? `${t} · local-ai-jay` : 'local-ai-jay';
 }
 
-// ---------------- markdown (safe: builds DOM nodes, never HTML strings) ----------------
-const SAFE_URL = /^(https?:|mailto:)/i;
-
-function inline(text) {
-  const out = [];
-  const re = /(`+)([\s\S]+?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*(?!\s)([\s\S]+?)\*|(?<![\w])_(?!\s)([\s\S]+?)_(?![\w])|\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|(https?:\/\/[^\s<>()]+[^\s<>().,:;"'!?\]])|\n/g;
-  let last = 0;
-  let m;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
-    last = re.lastIndex;
-    if (m[0] === '\n') out.push(el('br'));
-    else if (m[1]) out.push(el('code', { text: m[2].trim() || m[2] }));
-    else if (m[3] != null || m[4] != null) out.push(el('strong', {}, inline(m[3] ?? m[4])));
-    else if (m[5] != null) out.push(el('del', {}, inline(m[5])));
-    else if (m[6] != null || m[7] != null) out.push(el('em', {}, inline(m[6] ?? m[7])));
-    else if (m[8] != null) {
-      out.push(SAFE_URL.test(m[9])
-        ? el('a', { href: m[9], target: '_blank', rel: 'noopener noreferrer' }, inline(m[8]))
-        : document.createTextNode(m[0]));
-    } else if (m[10]) out.push(el('a', { href: m[10], target: '_blank', rel: 'noopener noreferrer', text: m[10] }));
-  }
-  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
-  return out;
-}
-
-function codeBlock(lang, body) {
+// ---------------- markdown ----------------
+function codeCopy(lang, body) {
   const btn = el('button', { class: 'codeblock-copy', type: 'button' }, icon('copy'), ' Copy');
   btn.addEventListener('click', async () => { if (await copy(body, true)) flashCopied(btn, 'Copy'); });
-  return el('div', { class: 'codeblock' },
-    el('div', { class: 'codeblock-head' }, el('span', { text: lang || 'code' }), btn),
-    el('pre', {}, el('code', { text: body })));
+  return [btn];
 }
-
-const RE = {
-  fence: /^\s*(```+|~~~+)\s*([\w+#.-]*)/,
-  heading: /^(#{1,6})\s+(.*?)\s*#*\s*$/,
-  hr: /^\s*([-*_])(\s*\1){2,}\s*$/,
-  quote: /^\s*>\s?/,
-  item: /^(\s*)([-*+]|\d+[.)])\s+(.*)$/,
-  tableSep: /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/,
-};
-const indentOf = (s) => s.match(/^\s*/)[0].replace(/\t/g, '    ').length;
-const splitRow = (s) => s.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-
-function blocks(text) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  const out = [];
-  let i = 0;
-  const startsBlock = (l, next) => RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.item.test(l)
-    || (l.includes('|') && next != null && RE.tableSep.test(next));
-
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!line.trim()) { i++; continue; }
-
-    let m = line.match(RE.fence);
-    if (m) {
-      const fence = m[1];
-      const body = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith(fence)) body.push(lines[i++]);
-      i++;
-      out.push(codeBlock(m[2], body.join('\n')));
-      continue;
-    }
-    if ((m = line.match(RE.heading))) {
-      out.push(el(`h${Math.min(m[1].length, 4)}`, {}, inline(m[2])));
-      i++;
-      continue;
-    }
-    if (RE.hr.test(line)) { out.push(el('hr')); i++; continue; }
-    if (RE.quote.test(line)) {
-      const body = [];
-      while (i < lines.length && lines[i].trim() && RE.quote.test(lines[i])) body.push(lines[i++].replace(RE.quote, ''));
-      out.push(el('blockquote', {}, blocks(body.join('\n'))));
-      continue;
-    }
-    if (line.includes('|') && RE.tableSep.test(lines[i + 1] || '')) {
-      const head = splitRow(line);
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(splitRow(lines[i++]));
-      out.push(el('table', {},
-        el('thead', {}, el('tr', {}, head.map((h) => el('th', {}, inline(h))))),
-        el('tbody', {}, rows.map((r) => el('tr', {}, head.map((_, j) => el('td', {}, inline(r[j] || ''))))))));
-      continue;
-    }
-    if ((m = line.match(RE.item))) {
-      const base = indentOf(line);
-      const ordered = /\d/.test(m[2]);
-      const list = el(ordered ? 'ol' : 'ul');
-      if (ordered && parseInt(m[2], 10) !== 1) list.setAttribute('start', parseInt(m[2], 10));
-      while (i < lines.length) {
-        const im = lines[i].match(RE.item);
-        if (!im || indentOf(lines[i]) !== base || /\d/.test(im[2]) !== ordered) break;
-        const body = [im[3]];
-        i++;
-        while (i < lines.length) {
-          const l = lines[i];
-          if (!l.trim()) {
-            const nxt = lines[i + 1];
-            if (nxt != null && nxt.trim() && indentOf(nxt) > base) { body.push(''); i++; continue; }
-            break;
-          }
-          if (indentOf(l) > base) { body.push(l.slice(Math.min(indentOf(l), base + (im[2].length + 1)))); i++; continue; }
-          if (RE.item.test(l) || startsBlock(l, lines[i + 1])) break;
-          body.push(l); // lazy continuation
-          i++;
-        }
-        const inner = blocks(body.join('\n'));
-        const li = el('li');
-        if (inner.length && inner[0].tagName === 'P') { li.append(...inner[0].childNodes); inner.shift(); }
-        li.append(...inner);
-        list.append(li);
-      }
-      out.push(list);
-      continue;
-    }
-    const para = [];
-    while (i < lines.length && lines[i].trim() && !(para.length && startsBlock(lines[i], lines[i + 1]))) para.push(lines[i++]);
-    out.push(el('p', {}, inline(para.join('\n'))));
-  }
-  return out;
-}
-
-function renderMarkdown(target, text) {
-  target.textContent = '';
-  target.append(...blocks(text));
-}
+const renderMarkdown = (target, text) => renderMd(target, text, { codeActions: codeCopy });
 
 // ---------------- chats (saved in this browser) ----------------
 let chats = [];
@@ -530,7 +410,7 @@ function setBusy(busy) {
 async function generate() {
   const c = current();
   if (!c || !c.messages.length) return;
-  const model = $('#pg-model').value || 'auto';
+  const model = modelMenu.value || 'auto';
   c.model = model;
   const system = (c.system || '').trim();
   const messages = [...(system ? [{ role: 'system', content: system }] : []), ...c.messages.map(({ role, content }) => ({ role, content }))];
@@ -634,44 +514,31 @@ async function generate() {
 }
 
 // ---------------- models ----------------
-function syncModelLabel() { $('#model-label').textContent = $('#pg-model').value || $('#pg-model').dataset.want || 'auto'; }
-function setModel(id) {
-  const sel = $('#pg-model');
-  if ([...sel.options].some((o) => o.value === id)) sel.value = id;
-  else sel.dataset.want = id;
-  syncModelLabel();
-}
+let modelsLoaded = [];
+const modelMenu = createModelMenu({
+  align: 'right',
+  onChange(id) {
+    store.set('local-ai-jay.model', id);
+    const c = current();
+    if (c) { c.model = id; saveChats(); }
+    input.focus();
+  },
+});
+$('#model-menu-slot').replaceWith(modelMenu.root);
+modelMenu.setValue(store.get('local-ai-jay.model') || 'auto');
+
+function setModel(id) { modelMenu.setValue(id); }
 
 async function loadModels() {
-  const sel = $('#pg-model');
-  const prev = sel.dataset.want || sel.value || store.get('local-ai-jay.model');
   try {
     const { data } = await api('/v1/models');
-    sel.textContent = '';
-    const groups = new Map();
-    for (const m of data) {
-      const g = m.owned_by === 'local-ai-jay' ? 'Routing' : m.owned_by;
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push(m.id);
-    }
-    for (const [g, ids] of groups) {
-      const og = el('optgroup', { label: g });
-      ids.forEach((id) => og.append(el('option', { value: id, text: id })));
-      sel.append(og);
-    }
-    if (prev && data.some((m) => m.id === prev)) sel.value = prev;
-    delete sel.dataset.want;
-    syncModelLabel();
+    modelsLoaded = data.map((m) => ({ id: m.id, owner: m.owned_by }));
+    modelMenu.setModels(modelsLoaded);
+    if (!modelsLoaded.some((m) => m.id === modelMenu.value)) modelMenu.setValue('auto');
   } catch (err) {
     if (err.message !== 'unauthorized') toast(`Couldn't load models: ${err.message}`);
   }
 }
-$('#pg-model').addEventListener('change', (e) => {
-  store.set('local-ai-jay.model', e.target.value);
-  syncModelLabel();
-  const c = current();
-  if (c) { c.model = e.target.value; saveChats(); }
-});
 
 // ---------------- providers ----------------
 const STATE_TEXT = {
@@ -721,40 +588,62 @@ function providerCard(p) {
   card.append(actions);
 
   if (p.needsKey) {
-    if (p.key) {
-      const row = el('div', { class: 'pcard-actions' },
-        el('code', { text: p.key.masked }),
-        el('span', { class: 'muted small', text: p.key.enabled ? '' : '(switched off)' }));
-      const onoff = el('button', { class: 'btn small', type: 'button', text: p.key.enabled ? 'Switch off' : 'Switch on' });
-      onoff.addEventListener('click', () => busy(onoff, async () => {
-        await api(`/api/providers/${p.id}/key`, { method: 'POST', body: JSON.stringify({ enabled: !p.key.enabled }) });
-        loadProviders();
-      }));
-      const del = el('button', { class: 'btn small', type: 'button', text: 'Remove' });
-      del.addEventListener('click', () => busy(del, async () => {
-        if (!confirm(`Remove the ${p.label} key from this computer?`)) return;
-        await api(`/api/providers/${p.id}/key`, { method: 'DELETE' });
-        toast('Key removed');
-        loadProviders();
-      }));
-      row.append(onoff, del);
-      card.append(row);
+    const keys = p.key || [];
+    if (keys.length) {
+      const list = el('div', { class: 'keylist' });
+      for (const k of keys) {
+        const onoff = el('button', { class: 'ghost small', type: 'button', text: k.enabled ? 'Off' : 'On', title: k.enabled ? 'Switch this key off' : 'Switch this key on' });
+        onoff.addEventListener('click', () => busy(onoff, async () => {
+          await api(`/api/providers/${p.id}/key/${k.id}`, { method: 'POST', body: JSON.stringify({ enabled: !k.enabled }) });
+          loadProviders();
+        }));
+        const del = el('button', { class: 'ghost small', type: 'button', text: 'Remove' });
+        del.addEventListener('click', () => busy(del, async () => {
+          if (!confirm(`Remove key ${k.masked} from this server?`)) return;
+          await api(`/api/providers/${p.id}/key/${k.id}`, { method: 'DELETE' });
+          toast('Key removed');
+          loadProviders();
+        }));
+        const note = !k.enabled ? 'off' : k.resting ? 'resting (hit its limit)' : '';
+        list.append(el('div', { class: `keyrow-item${k.enabled ? '' : ' off'}` },
+          el('code', { text: k.masked }),
+          el('span', { class: 'muted small', text: note }),
+          el('span', { class: 'spacer' }),
+          onoff, del));
+      }
+      card.append(list);
+      if (keys.length > 1) card.append(el('div', { class: 'muted small', text: `${keys.filter((k) => k.enabled).length} of ${keys.length} keys on. They take turns; a key that hits its limit rests and the next one is used.` }));
     } else if (p.keySource === 'env') {
-      card.append(el('div', { class: 'muted small', text: `Using ${p.envKey} from your environment.` }));
+      card.append(el('div', { class: 'muted small', text: `Using ${p.envKey} from the environment.` }));
     }
-    const keyInput = el('input', { type: 'password', placeholder: p.key ? 'Replace key…' : 'Paste API key…', autocomplete: 'off', 'aria-label': `${p.label} API key` });
-    const save = el('button', { class: 'btn small primary', type: 'submit', text: 'Save' });
+    const keyInput = el('textarea', {
+      rows: 1,
+      placeholder: keys.length ? 'Add more keys (one per line)…' : 'Paste API key(s), one per line…',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      'aria-label': `${p.label} API keys`,
+      class: 'keyinput',
+    });
+    keyInput.addEventListener('input', () => { keyInput.rows = Math.min(6, Math.max(1, keyInput.value.split('\n').length)); });
+    const save = el('button', { class: 'primary small', type: 'submit', text: 'Add' });
     const form = el('form', { class: 'keyrow' }, keyInput, save);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      if (!keyInput.value.trim()) return;
+      const text = keyInput.value.trim();
+      if (!text) return;
       busy(save, async () => {
-        await api(`/api/providers/${p.id}/key`, { method: 'PUT', body: JSON.stringify({ key: keyInput.value.trim() }) });
+        const r = await api(`/api/providers/${p.id}/key`, { method: 'PUT', body: JSON.stringify({ keys: text.split(/[\s,]+/) }) });
         keyInput.value = '';
-        toast(`${p.label} key checked and saved`);
+        keyInput.rows = 1;
+        const ok = r.results.filter((x) => x.ok && !x.duplicate).length;
+        const dup = r.results.filter((x) => x.duplicate).length;
+        const bad = r.results.filter((x) => !x.ok);
+        toast(`${p.label}: ${ok} key${ok === 1 ? '' : 's'} checked and added${dup ? `, ${dup} already saved` : ''}${bad.length ? `, ${bad.length} rejected` : ''}`);
         loadProviders();
+        if (bad.length) setTimeout(() => toast(`Rejected: ${bad.map((b) => `${b.masked} (${b.error})`).join('; ')}`), 2800);
       });
     });
+    form.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) form.requestSubmit(); });
     card.append(form);
   }
   card.append(result);

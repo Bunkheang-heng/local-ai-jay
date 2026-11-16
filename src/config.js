@@ -6,7 +6,7 @@ import { readJson, writeJsonSecure, realpathOrNull, GatewayError } from './util.
 export const DEFAULT_AUTO_ORDER = [
   'claude-code', 'codex', 'gemini-cli', 'antigravity',
   'ollama', 'lmstudio',
-  'groq', 'cerebras', 'gemini-api', 'openrouter', 'mistral', 'deepseek', 'openai',
+  'groq', 'cerebras', 'gemini-api', 'openrouter', 'mistral', 'deepseek', 'sealion', 'openai',
 ];
 
 export function newApiKey() {

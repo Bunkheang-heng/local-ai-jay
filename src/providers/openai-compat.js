@@ -54,13 +54,41 @@ export async function upstreamError(res, label) {
  * A provider that speaks the OpenAI chat-completions protocol: cloud APIs and local servers
  * like Ollama and LM Studio.
  */
-export function createOpenAICompatProvider(spec, { getKey = () => null, fetchImpl = globalThis.fetch } = {}) {
+export function createOpenAICompatProvider(spec, { getKeys = () => [], fetchImpl = globalThis.fetch } = {}) {
   const {
     id, label, kind = 'cloud', needsKey = true, envKey, keyUrl, preferredModels = [],
     streamUsage = true, extraHeaders = {},
   } = spec;
   const base = () => (typeof spec.baseUrl === 'function' ? spec.baseUrl() : spec.baseUrl).replace(/\/+$/, '');
-  const key = () => getKey(id) || (envKey ? process.env[envKey] : null) || null;
+  // Keys from the console, else from the environment (several allowed, comma-separated).
+  const keys = () => {
+    const saved = getKeys(id) || [];
+    if (saved.length) return saved;
+    const env = envKey ? process.env[envKey] : '';
+    return env ? env.split(',').map((k) => k.trim()).filter(Boolean) : [];
+  };
+  const key = () => keys()[0] || null;
+
+  // Keys take turns. A key that hits a rate limit (429) or is rejected (401/403) rests for a while
+  // and the request moves on to the next key, so callers only see an error when every key fails.
+  let turn = 0;
+  const resting = new Map(); // key -> rest-until (ms)
+  function keysInTurn() {
+    const list = keys();
+    if (!list.length) return [null];
+    const start = turn++ % list.length;
+    const rotated = [...list.slice(start), ...list.slice(0, start)];
+    const now = Date.now();
+    const ready = rotated.filter((k) => !(resting.get(k) > now));
+    const tired = rotated.filter((k) => resting.get(k) > now).sort((a, b) => resting.get(a) - resting.get(b));
+    return [...ready, ...tired];
+  }
+  function rest(k, res) {
+    if (!k) return;
+    const after = Number(res.headers?.get?.('retry-after'));
+    const ms = res.status === 429 ? (after > 0 ? Math.min(after, 3600) * 1000 : 60_000) : 10 * 60_000;
+    resting.set(k, Date.now() + ms);
+  }
 
   let modelCache = { at: 0, list: null };
 
@@ -95,13 +123,26 @@ export function createOpenAICompatProvider(spec, { getKey = () => null, fetchImp
     return preferredModels.find((m) => list.includes(m)) || list[0] || preferredModels[0] || null;
   }
 
-  function fetchChat(body, signal) {
-    return fetchImpl(`${base()}/chat/completions`, {
-      method: 'POST',
-      headers: headers(key()),
-      body: JSON.stringify(body),
-      signal,
-    });
+  async function fetchChat(body, signal) {
+    const order = keysInTurn();
+    let res;
+    for (let i = 0; i < order.length; i++) {
+      res = await fetchImpl(`${base()}/chat/completions`, {
+        method: 'POST',
+        headers: headers(order[i]),
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (res.status === 429 || res.status === 401 || res.status === 403) {
+        rest(order[i], res);
+        if (i < order.length - 1) {
+          try { await res.body?.cancel(); } catch { /* ignore */ }
+          continue;
+        }
+      }
+      return res;
+    }
+    return res;
   }
 
   return {
@@ -114,8 +155,11 @@ export function createOpenAICompatProvider(spec, { getKey = () => null, fetchImp
     baseUrl: base,
     streamUsage,
 
+    keyCount: () => keys().length,
+    isResting: (k) => resting.get(k) > Date.now(),
+
     keySource() {
-      if (getKey(id)) return 'console';
+      if ((getKeys(id) || []).length) return 'console';
       if (envKey && process.env[envKey]) return 'env';
       return null;
     },
@@ -123,7 +167,7 @@ export function createOpenAICompatProvider(spec, { getKey = () => null, fetchImp
     async status() {
       if (needsKey) {
         return key()
-          ? { available: true, state: 'ready', detail: this.keySource() === 'env' ? `Key from ${envKey}` : 'Key added in console' }
+          ? { available: true, state: 'ready', detail: keyDetail(this.keySource(), keys().length) }
           : { available: false, state: 'no_key', detail: `Add a key${envKey ? ` (or set ${envKey})` : ''}` };
       }
       try {
@@ -171,6 +215,11 @@ export function createOpenAICompatProvider(spec, { getKey = () => null, fetchImp
   };
 }
 
+function keyDetail(source, n) {
+  const what = n === 1 ? 'Key' : `${n} keys (taking turns)`;
+  return source === 'env' ? `${what} from environment` : `${what} added in console`;
+}
+
 export const CLOUD_SPECS = [
   {
     id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', envKey: 'GROQ_API_KEY',
@@ -196,6 +245,11 @@ export const CLOUD_SPECS = [
   {
     id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', envKey: 'DEEPSEEK_API_KEY',
     keyUrl: 'https://platform.deepseek.com/api_keys', preferredModels: ['deepseek-chat'],
+  },
+  {
+    id: 'sealion', label: 'SEA-LION', baseUrl: 'https://api.sea-lion.ai/v1', envKey: 'SEALION_API_KEY',
+    keyUrl: 'https://playground.sea-lion.ai', streamUsage: false,
+    preferredModels: ['aisingapore/Qwen-SEA-LION-v4.5-27B-IT', 'aisingapore/Llama-SEA-LION-v3.5-70B-R'],
   },
   {
     id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', envKey: 'OPENAI_API_KEY',

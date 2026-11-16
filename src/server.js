@@ -3,7 +3,7 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { GatewayError, Semaphore, safeEqual, isInside, realpathOrNull, localDay } from './util.js';
+import { GatewayError, Semaphore, safeEqual, isInside, realpathOrNull, localDay, maskSecret } from './util.js';
 import { parseModel } from './providers/index.js';
 import { validateMessages } from './prompt.js';
 import { pickParams, sseData, upstreamError } from './providers/openai-compat.js';
@@ -14,6 +14,8 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/markdown.js': ['markdown.js', 'text/javascript; charset=utf-8'],
+  '/model-menu.js': ['model-menu.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
 };
@@ -353,6 +355,18 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
   }
 
   // ---------------- console API ----------------
+  function keyView(p) {
+    const entries = store.keyEntries(p.id);
+    if (!entries.length) return null;
+    return entries.map((k) => ({
+      id: k.id,
+      masked: maskSecret(k.value),
+      enabled: k.enabled !== false,
+      resting: !!p.isResting?.(k.value),
+      addedAt: k.addedAt,
+    }));
+  }
+
   async function providerView(p, fresh) {
     const st = await statusOf(p, { fresh });
     return {
@@ -366,7 +380,7 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
       needsKey: !!p.needsKey,
       envKey: p.envKey || null,
       keyUrl: p.keyUrl || p.installHint || null,
-      key: p.needsKey ? store.keyInfo(p.id) : null,
+      key: p.needsKey ? keyView(p) : null,
       keySource: p.keySource ? p.keySource() : null,
     };
   }
@@ -442,23 +456,40 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
       if (method === 'GET' && action === 'models') return sendJson(res, 200, { models: await p.models() });
       if (action === 'key') {
         if (!p.needsKey) return sendError(res, 400, `${p.label} doesn't use an API key`);
+        const keyId = parts[4] || null;
         if (method === 'PUT') {
-          const { key } = await readJsonBody(req);
-          const value = typeof key === 'string' ? key.trim() : '';
-          if (value.length < 8 || /\s/.test(value)) return sendError(res, 400, 'That doesn\'t look like an API key');
-          try {
-            await p.validateKey(value);
-          } catch (err) {
-            return sendError(res, 400, `The provider rejected this key: ${err.message}`, 'invalid_key');
+          // Accepts { key } or { keys: [...] } (or newline-separated text); each is checked with the provider first.
+          const body = await readJsonBody(req);
+          const raw = Array.isArray(body.keys) ? body.keys : String(body.keys ?? body.key ?? '').split(/[\s,]+/);
+          const candidates = [...new Set(raw.map((k) => String(k).trim()).filter(Boolean))].slice(0, 50);
+          if (!candidates.length) return sendError(res, 400, 'Paste at least one API key');
+          const results = [];
+          for (const value of candidates) {
+            const masked = maskSecret(value);
+            if (value.length < 8 || /\s/.test(value)) { results.push({ masked, ok: false, error: 'doesn\'t look like an API key' }); continue; }
+            try {
+              await p.validateKey(value);
+              const added = store.addKey(p.id, value);
+              results.push({ masked, ok: true, duplicate: !added });
+            } catch (err) {
+              results.push({ masked, ok: false, error: err.message.replace(`${p.label}: `, '') });
+            }
           }
-          store.setKey(p.id, value);
+          statusCache.delete(p.id);
+          const view = await providerView(p, true);
+          if (!results.some((r) => r.ok)) {
+            return sendError(res, 400, `The provider rejected ${results.length === 1 ? 'this key' : 'all of these keys'}: ${results.map((r) => `${r.masked} (${r.error})`).join('; ')}`, 'invalid_key');
+          }
+          return sendJson(res, 200, { ...view, results });
+        }
+        if (method === 'DELETE') {
+          if (!store.removeKey(p.id, keyId)) return sendError(res, 404, 'No such key');
           statusCache.delete(p.id);
           return sendJson(res, 200, await providerView(p, true));
         }
-        if (method === 'DELETE') { store.removeKey(p.id); statusCache.delete(p.id); return sendJson(res, 200, await providerView(p, true)); }
         if (method === 'POST') {
           const { enabled } = await readJsonBody(req);
-          if (!store.setKeyEnabled(p.id, enabled)) return sendError(res, 404, 'No key saved for this provider');
+          if (!store.setKeyEnabled(p.id, enabled, keyId)) return sendError(res, 404, 'No such key');
           statusCache.delete(p.id);
           return sendJson(res, 200, await providerView(p, true));
         }

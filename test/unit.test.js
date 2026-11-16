@@ -158,18 +158,67 @@ test('env file loads without overriding real env', () => {
 test('store keeps keys, pauses and usage across restarts', () => {
   const dir = tmp();
   const s = new Store(dir);
-  s.setKey('groq', 'gsk_1234567890abcdef');
+  assert.equal(s.addKey('groq', 'gsk_1234567890abcdef'), true);
+  assert.equal(s.addKey('groq', 'gsk_1234567890abcdef'), false); // duplicate
+  s.addKey('groq', 'gsk_second_key_0000');
   s.setPaused('codex', true);
   s.record({ provider: 'groq', ok: true, inputTokens: 10, outputTokens: 5, ms: 100 });
   s.record({ provider: 'groq', ok: false, ms: 50 });
   s.saveNow();
   const s2 = new Store(dir);
-  assert.equal(s2.getKey('groq'), 'gsk_1234567890abcdef');
-  assert.equal(s2.keyInfo('groq').masked, 'gsk_…cdef');
+  assert.deepEqual(s2.getKeys('groq'), ['gsk_1234567890abcdef', 'gsk_second_key_0000']);
+  assert.deepEqual(s2.keyInfo('groq').map((k) => k.masked), ['gsk_…cdef', 'gsk_…0000']);
   assert.equal(s2.isPaused('codex'), true);
   assert.deepEqual(s2.usage().totals, { requests: 2, errors: 1, inputTokens: 10, outputTokens: 5, totalMs: 150 });
-  s2.setKeyEnabled('groq', false);
-  assert.equal(s2.getKey('groq'), null);
+  const firstId = s2.keyInfo('groq')[0].id;
+  s2.setKeyEnabled('groq', false, firstId);
+  assert.deepEqual(s2.getKeys('groq'), ['gsk_second_key_0000']);
+  s2.removeKey('groq', firstId);
+  assert.equal(s2.keyInfo('groq').length, 1);
+  s2.removeKey('groq');
+  assert.equal(s2.keyInfo('groq'), null);
+});
+
+test('store upgrades the old single-key format', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ keys: { groq: { value: 'gsk_old_single_key', enabled: true } } }));
+  const s = new Store(dir);
+  assert.deepEqual(s.getKeys('groq'), ['gsk_old_single_key']);
+  assert.equal(s.keyInfo('groq').length, 1);
+});
+
+test('several keys take turns; a rate-limited key rests and the next one answers', async () => {
+  const { createOpenAICompatProvider } = await import('../src/providers/openai-compat.js');
+  const seen = [];
+  const limited = new Set(['k-two']);
+  const fetchImpl = async (url, opts) => {
+    const k = opts.headers.authorization.slice(7);
+    seen.push(k);
+    if (limited.has(k)) return new Response('{"error":{"message":"rate limited"}}', { status: 429, headers: { 'retry-after': '30' } });
+    return new Response('{"ok":true}', { status: 200 });
+  };
+  const p = createOpenAICompatProvider({ id: 'x', label: 'X', baseUrl: 'http://x/v1' }, { getKeys: () => ['k-one', 'k-two', 'k-three'], fetchImpl });
+  const statuses = [];
+  for (let i = 0; i < 4; i++) statuses.push((await p.fetchChat({}, undefined)).status);
+  assert.deepEqual(statuses, [200, 200, 200, 200]);
+  // turn 1: one; turn 2: two (429, rests) -> three; turn 3: three; turn 4: one (two still resting)
+  assert.deepEqual(seen, ['k-one', 'k-two', 'k-three', 'k-three', 'k-one']);
+  assert.equal(p.isResting('k-two'), true);
+  assert.equal(p.keyCount(), 3);
+
+  // Every key limited: the caller gets the 429.
+  limited.add('k-one'); limited.add('k-three');
+  assert.equal((await p.fetchChat({}, undefined)).status, 429);
+});
+
+test('env var can hold several comma-separated keys', async () => {
+  const { createOpenAICompatProvider } = await import('../src/providers/openai-compat.js');
+  process.env.JAY_TEST_MULTI_KEY = 'aaa111aaa, bbb222bbb';
+  const p = createOpenAICompatProvider({ id: 'y', label: 'Y', baseUrl: 'http://y/v1', envKey: 'JAY_TEST_MULTI_KEY' }, {});
+  assert.equal(p.keyCount(), 2);
+  assert.equal(p.keySource(), 'env');
+  assert.match((await p.status()).detail, /2 keys/);
+  delete process.env.JAY_TEST_MULTI_KEY;
 });
 
 test('semaphore queues and honours abort', async () => {
