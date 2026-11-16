@@ -258,9 +258,9 @@ $('#pg-form').addEventListener('submit', async (e) => {
 // ---------------- providers ----------------
 const STATE_TEXT = {
   ready: 'Ready', not_installed: 'Not installed', no_key: 'No key', offline: 'Not running',
-  no_models: 'No models', paused: 'Paused', error: 'Error',
+  no_models: 'No models', paused: 'Paused', error: 'Error', off: 'Off',
 };
-const KIND_TEXT = { cli: 'CLI', local: 'local', cloud: 'cloud' };
+const KIND_TEXT = { cli: 'CLI', local: 'local', cloud: 'cloud', web: 'website' };
 
 function providerCard(p) {
   const result = el('div', { class: 'pcard-result', hidden: true });
@@ -297,7 +297,7 @@ function providerCard(p) {
     loadProviders();
   }));
   actions.append(toggle);
-  if (p.keyUrl && (!p.available || p.needsKey)) {
+  if (p.keyUrl && p.kind !== 'web' && (!p.available || p.needsKey)) {
     actions.append(el('a', { href: p.keyUrl, target: '_blank', rel: 'noopener noreferrer', class: 'small', text: p.needsKey ? 'Get a key ↗' : 'Install ↗' }));
   }
   card.append(actions);
@@ -346,11 +346,10 @@ function providerCard(p) {
 async function loadProviders(fresh = false) {
   try {
     const { providers } = await api(`/api/providers${fresh ? '?fresh=1' : ''}`);
+    const groups = { cloud: $('#prov-cloud'), web: $('#prov-web') };
     const local = $('#prov-local');
-    const cloud = $('#prov-cloud');
-    local.textContent = '';
-    cloud.textContent = '';
-    for (const p of providers) (p.kind === 'cloud' ? cloud : local).append(providerCard(p));
+    for (const g of [local, ...Object.values(groups)]) g.textContent = '';
+    for (const p of providers) (groups[p.kind] || local).append(providerCard(p));
   } catch (err) {
     if (err.message !== 'unauthorized') toast(err.message);
   }

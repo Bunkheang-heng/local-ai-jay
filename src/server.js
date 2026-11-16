@@ -64,7 +64,7 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
   const startedAt = Date.now();
 
   const semaphoreFor = (p) => {
-    if (!semaphores.has(p.id)) semaphores.set(p.id, new Semaphore(config.cliConcurrency || 2));
+    if (!semaphores.has(p.id)) semaphores.set(p.id, new Semaphore(p.maxConcurrency || config.cliConcurrency || 2));
     return semaphores.get(p.id);
   };
 
@@ -122,7 +122,8 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
       if (store.isPaused(p.id)) throw new GatewayError(503, `${p.label} is paused. Resume it in the console.`, 'provider_paused');
       return [{ provider: p, model: target.model }];
     }
-    const order = [...config.autoOrder, ...registry.list().map((p) => p.id)];
+    // Website providers are only used by `auto` if you list them in autoOrder yourself.
+    const order = [...config.autoOrder, ...registry.list().filter((p) => p.kind !== 'web').map((p) => p.id)];
     const seen = new Set();
     const list = [];
     for (const id of order) {
@@ -194,12 +195,13 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
         let roleSent = false;
         let release = () => {};
         try {
-          if (provider.kind === 'cli') release = await semaphoreFor(provider).acquire(ac.signal);
+          if (provider.kind === 'cli' || provider.kind === 'web') release = await semaphoreFor(provider).acquire(ac.signal);
           const events = provider.chat({
             messages: body.messages, model, signal: ac.signal, params: pickParams(body), settings: settingsFor(workdir),
           });
           for await (const ev of events) {
             if (ev.type === 'usage') { usage = ev; continue; }
+            if (ev.type === 'final') { text = ev.text; continue; }
             if (ev.type !== 'text' && ev.type !== 'reasoning') continue;
             emitted = true;
             if (ev.type === 'text') text += ev.text; else reasoning += ev.text;
@@ -377,13 +379,14 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
     const timer = setTimeout(() => ac.abort(), 120_000);
     let release = () => {};
     try {
-      if (p.kind === 'cli') release = await semaphoreFor(p).acquire(ac.signal);
+      if (p.kind === 'cli' || p.kind === 'web') release = await semaphoreFor(p).acquire(ac.signal);
       const events = p.chat({
         messages: [{ role: 'user', content: 'Reply with exactly one word: pong' }],
         model: null, signal: ac.signal, params: { max_tokens: 20 }, settings: settingsFor(null),
       });
       for await (const ev of events) {
         if (ev.type === 'text') reply += ev.text;
+        if (ev.type === 'final') reply = ev.text;
         if (ev.type === 'usage') usage = ev;
       }
       const ms = Date.now() - t0;

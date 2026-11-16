@@ -40,8 +40,30 @@ OpenAI client can use. Press Ctrl+C to stop.
 | Ollama | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | `ollama/<model>`, e.g. `ollama/llama3.2` |
 | LM Studio | `http://127.0.0.1:1234` (or `$LMSTUDIO_BASE_URL`) | `lmstudio/<model>` |
 | Groq, Cerebras, Google AI Studio, OpenRouter, Mistral, DeepSeek, OpenAI | your API key | `groq/llama-3.3-70b-versatile`, `openrouter/<vendor>/<model>`, … |
+| Gemini website *(opt-in, see below)* | gemini.google.com in a real browser | `gemini-web` |
 
 `GET /v1/models` lists everything that's ready right now.
+
+## Website providers (opt-in)
+
+With `--web`, local-ai-jay can also use **the Gemini website** in a real Chrome/Edge/Brave/Chromium
+window: it opens a new chat, types your prompt, and reads the answer back as Markdown while it's
+written. It works signed out (Gemini's free model) or signed in to your Google account.
+
+```bash
+npx local-ai-jay web-signin      # optional, once: sign in to Google in its own browser profile
+npx local-ai-jay --web           # turn it on (remembered); --no-web turns it off
+npx local-ai-jay --web-headless  # no window (for servers); --web-window shows it again
+npx local-ai-jay ask -m gemini-web "Explain DNS like I'm five"
+```
+
+> **Read this first.** Websites aren't APIs, and their terms don't allow automated use, so **your
+> account could be limited or banned**. Use an account you can afford to lose and keep it to
+> personal use. local-ai-jay doesn't hide that it's automated and never solves CAPTCHAs or sign-in
+> checks: if a site asks, run `web-signin` and do it yourself. Requests run one at a time, `auto`
+> never picks a website unless you add it to `autoOrder` in `config.json`, and the browser uses its
+> own profile in `~/.local-ai-jay/browser-profile`, separate from your everyday browser.
+> Needs Node 22+.
 
 ## The console
 
@@ -108,8 +130,7 @@ npx local-ai-jay ask "<prompt>"      # one answer in the terminal, no server
   chat only when you press it.
 - **Chat history goes to CLIs as one prompt.** CLIs take a single prompt, so earlier turns and system
   messages are folded into it. Images are dropped for CLIs; use an API provider for vision.
-- **No website automation.** local-ai-jay doesn't drive ChatGPT/Grok/etc. in a browser: that breaks
-  those sites' terms and gets accounts banned. It only uses official CLIs and APIs.
+- **Website automation is off by default.** Only `--web` turns it on, with the warning above.
 
 ## Security
 
@@ -139,6 +160,9 @@ Custom CLI locations: `LOCAL_AI_JAY_CLAUDE_BIN`, `LOCAL_AI_JAY_CODEX_BIN`, `LOCA
   in. Run the CLI once in your terminal, sign in, and press Test again.
 - **Antigravity is slow to start:** `agy` itself takes roughly 15–35 seconds to start each run
   (loading its plugins and MCP servers) before it answers. Fewer plugins in Antigravity means faster replies.
+- **Gemini website "didn't answer":** you may have hit its free limit, or it wants a sign-in. Run
+  `npx local-ai-jay web-signin` (with the gateway stopped), sign in, close the window, start again.
+  Custom browser: `LOCAL_AI_JAY_BROWSER=/path/to/chrome`.
 - **Ollama / LM Studio "Not running":** start the app (and for LM Studio, start its local server).
 - Logs: `~/.local-ai-jay/logs/requests.log`.
 

@@ -1,9 +1,17 @@
 import { createCliProvider, claudeSpec, codexSpec, geminiSpec, antigravitySpec } from './cli.js';
 import { createOpenAICompatProvider, CLOUD_SPECS, localSpecs } from './openai-compat.js';
+import { createWebProvider, WEB_SITES } from '../web/provider.js';
 
 /** Every provider local-ai-jay knows about, in display order. */
-export function createRegistry({ store, env = process.env, fetchImpl } = {}) {
+export function createRegistry({ store, env = process.env, fetchImpl, config, getBrowser } = {}) {
   const getKey = (id) => store?.getKey(id) ?? null;
+  const web = getBrowser
+    ? WEB_SITES.map((site) => createWebProvider(site, {
+      getBrowser,
+      isEnabled: () => !!config?.web?.enabled,
+      timeoutMs: () => (config?.web?.timeoutSeconds || 300) * 1000,
+    }))
+    : [];
   const providers = [
     createCliProvider(claudeSpec, { env }),
     createCliProvider(codexSpec, { env }),
@@ -11,6 +19,7 @@ export function createRegistry({ store, env = process.env, fetchImpl } = {}) {
     createCliProvider(antigravitySpec, { env }),
     ...localSpecs(env).map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
     ...CLOUD_SPECS.map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
+    ...web,
   ];
   return registryFrom(providers);
 }

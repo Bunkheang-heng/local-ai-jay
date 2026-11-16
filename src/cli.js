@@ -9,6 +9,8 @@ import { Store } from './store.js';
 import { createRegistry, parseModel } from './providers/index.js';
 import { createGateway, listen } from './server.js';
 import { pickParams } from './providers/openai-compat.js';
+import { Browser } from './web/browser.js';
+import { WEB_SITES } from './web/provider.js';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -29,6 +31,7 @@ ${bold('Commands')}
   doctor                Check which providers are ready
   models                List the models you can use right now
   ask "<prompt>"        Ask once from the terminal, no server needed (reads stdin if no prompt)
+  web-signin            Open the website providers' browser window to sign in (stop the gateway first)
 
 ${bold('Options')}
   -p, --port <n>        Port to listen on (default 3000; next free one if taken)
@@ -39,6 +42,9 @@ ${bold('Options')}
       --cors            Allow browser apps on other origins to call /v1 (remembered)
       --no-cors         Turn that off again
       --no-open         Don't open the browser
+      --web             Turn on website providers (Gemini website in a real browser; remembered)
+      --no-web          Turn them off again
+      --web-headless    Run that browser without a window (remembered); --web-window to show it
   -m, --model <name>    Model for \`ask\` (default: auto)
   -h, --help            Show this help
   -v, --version         Show the version
@@ -69,8 +75,10 @@ function setup() {
   const { config, firstRun } = loadConfig(paths);
   loadEnvFile(paths.env);
   const store = new Store(paths.state);
-  const registry = createRegistry({ store });
-  return { paths, config, firstRun, store, registry };
+  let browser = null;
+  const getBrowser = () => (browser ||= new Browser({ profileDir: path.join(paths.home, 'browser-profile'), headless: !!config.web.headless }));
+  const registry = createRegistry({ store, config, getBrowser });
+  return { paths, config, firstRun, store, registry, getBrowser, hasBrowser: () => !!browser };
 }
 
 const STATE_LABEL = {
@@ -80,6 +88,7 @@ const STATE_LABEL = {
   offline: dim('not running'),
   no_models: yellow('no models'),
   paused: yellow('paused'),
+  off: dim('off'),
   error: red('error'),
 };
 
@@ -101,7 +110,7 @@ function consoleUrl(port, key) {
 }
 
 async function cmdStart(values) {
-  const { paths, config, firstRun, store, registry } = setup();
+  const { paths, config, firstRun, store, registry, getBrowser, hasBrowser } = setup();
   let changed = false;
   for (const d of values.allow || []) { const real = addAllowedDir(config, d); console.log(`${green('✓')} Allowed ${real}`); changed = true; }
   for (const d of values.disallow || []) { if (removeAllowedDir(config, d)) { console.log(`${green('✓')} Removed ${d}`); changed = true; } }
@@ -109,6 +118,10 @@ async function cmdStart(values) {
   if (values['read-only']) { config.cliAccess = 'read-only'; changed = true; }
   if (values.cors) { config.cors = true; changed = true; }
   if (values['no-cors']) { config.cors = false; changed = true; }
+  if (values.web && !config.web.enabled) { printWebWarning(); config.web.enabled = true; changed = true; }
+  if (values['no-web']) { config.web.enabled = false; changed = true; }
+  if (values['web-headless']) { config.web.headless = true; changed = true; }
+  if (values['web-window']) { config.web.headless = false; changed = true; }
   const explicitPort = values.port !== undefined;
   if (explicitPort) {
     const n = Number(values.port);
@@ -155,12 +168,34 @@ async function cmdStart(values) {
     console.log(dim('\n  Stopping…'));
     store.saveNow();
     logStream.end();
+    if (hasBrowser()) getBrowser().close().catch(() => {});
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+}
+
+function printWebWarning() {
+  console.log(`
+  ${yellow(bold('Website providers'))}
+  local-ai-jay will type your prompts into websites (Gemini) in its own browser window and read the
+  answers back. Those sites' terms don't allow automated use, so ${bold('your account could be limited')}
+  ${bold('or banned')}. Use an account you can afford to lose, and keep it to personal use. It never solves
+  CAPTCHAs or sign-in checks for you: if a site asks, run \`npx local-ai-jay web-signin\`.
+  Turn it off any time with --no-web.
+`);
+}
+
+async function cmdWebSignin() {
+  const { getBrowser } = setup();
+  const browser = getBrowser();
+  if (await browser.close()) console.log(dim('  Closed the gateway\'s browser window first.'));
+  console.log(`\n  Opening ${WEB_SITES.map((s) => s.url).join(', ')}`);
+  console.log('  Sign in normally in that window, then close it. local-ai-jay will stay signed in.\n');
+  await browser.openForSignIn(WEB_SITES.map((s) => s.url));
+  console.log(`  ${green('✓')} Done. Start the gateway with --web.\n`);
 }
 
 async function cmdKey() {
@@ -209,7 +244,15 @@ async function readStdin() {
 }
 
 async function cmdAsk(values, rest) {
-  const { paths, config, store, registry } = setup();
+  const { paths, config, store, registry, getBrowser, hasBrowser } = setup();
+  try {
+    await askWith({ values, rest, paths, config, store, registry });
+  } finally {
+    if (hasBrowser()) await getBrowser().close().catch(() => {});
+  }
+}
+
+async function askWith({ values, rest, paths, config, store, registry }) {
   const stdin = await readStdin();
   const prompt = [rest.join(' '), stdin].filter((s) => s.trim()).join('\n\n');
   if (!prompt.trim()) throw new Error('Nothing to ask. Usage: npx local-ai-jay ask "your question"');
@@ -282,6 +325,10 @@ export async function main(argv) {
       cors: { type: 'boolean' },
       'no-cors': { type: 'boolean' },
       'no-open': { type: 'boolean' },
+      web: { type: 'boolean' },
+      'no-web': { type: 'boolean' },
+      'web-headless': { type: 'boolean' },
+      'web-window': { type: 'boolean' },
       model: { type: 'string', short: 'm' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
@@ -299,6 +346,7 @@ export async function main(argv) {
     case 'doctor': return cmdDoctor();
     case 'models': return cmdModels();
     case 'ask': return cmdAsk(values, rest);
+    case 'web-signin': return cmdWebSignin();
     default:
       throw new Error(`Unknown command "${command}". Run \`npx local-ai-jay --help\`.`);
   }
