@@ -41,5 +41,13 @@
     "proxy"
   ],
   "author": "bunkheangheng",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bunkheang-heng/local-ai-jay.git"
+  },
+  "homepage": "https://github.com/Bunkheang-heng/local-ai-jay#readme",
+  "bugs": {
+    "url": "https://github.com/Bunkheang-heng/local-ai-jay/issues"
+  },
   "license": "MIT"
 }
