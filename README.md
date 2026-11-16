@@ -1,7 +1,7 @@
 # local-ai-jay
 
 **One local, OpenAI-compatible API and console in front of your own AI tools:** Claude Code, Codex,
-Gemini CLI, Ollama, LM Studio, and (optionally) your Groq, Cerebras, Google AI Studio, OpenRouter,
+Gemini CLI, Antigravity, Ollama, LM Studio, and (optionally) your Groq, Cerebras, Google AI Studio, OpenRouter,
 Mistral, DeepSeek and OpenAI keys.
 
 ```bash
@@ -36,6 +36,7 @@ OpenAI client can use. Press Ctrl+C to stop.
 | Claude Code | `claude -p` headless, as you | `claude-code`, `claude-code/sonnet`, `/opus`, `/haiku`, or any full model id |
 | Codex | `codex exec` headless, as you | `codex`, `codex/<model>` |
 | Gemini CLI | `gemini -p` headless, as you | `gemini-cli`, `gemini-cli/pro`, `/flash` |
+| Antigravity | `agy` headless (stream-json over stdin), as you | `antigravity`, `antigravity/<model>` (listed live from `agy models`, e.g. `antigravity/claude-sonnet-4-6`) |
 | Ollama | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | `ollama/<model>`, e.g. `ollama/llama3.2` |
 | LM Studio | `http://127.0.0.1:1234` (or `$LMSTUDIO_BASE_URL`) | `lmstudio/<model>` |
 | Groq, Cerebras, Google AI Studio, OpenRouter, Mistral, DeepSeek, OpenAI | your API key | `groq/llama-3.3-70b-versatile`, `openrouter/<vendor>/<model>`, … |
@@ -98,7 +99,9 @@ npx local-ai-jay ask "<prompt>"      # one answer in the terminal, no server
 
 - **The CLIs only see the folders you allow.** By default that's an empty folder,
   `~/.local-ai-jay/workspace`, and they run **read-only** (Claude Code in its default permission
-  mode, Codex in its `read-only` sandbox, Gemini CLI in `default` approval mode). `--allow <dir>`
+  mode, Codex in its `read-only` sandbox, Gemini CLI in `default` approval mode, Antigravity with
+  session-only deny rules for writing files, running commands and MCP tools, which override an
+  "always proceed" setting of your own). `--allow <dir>`
   adds folders; `--allow-edits` lets them change files there. A request can choose its working
   folder with a `workdir` field (or `X-Workdir` header), which must be inside an allowed folder.
 - **Usage counts against your own plans.** Nothing runs by itself; the Test button sends one tiny
@@ -125,7 +128,8 @@ Everything lives in `~/.local-ai-jay` (or `$LOCAL_AI_JAY_HOME`): `config.json` (
 `state/state.json` (pauses, provider keys, usage), `logs/requests.log`, `workspace/`. You can also put
 `NAME=value` lines (like `GROQ_API_KEY=…`) in `~/.local-ai-jay/env`. To remove everything, delete the folder.
 
-Custom CLI locations: `LOCAL_AI_JAY_CLAUDE_BIN`, `LOCAL_AI_JAY_CODEX_BIN`, `LOCAL_AI_JAY_GEMINI_BIN`.
+Custom CLI locations: `LOCAL_AI_JAY_CLAUDE_BIN`, `LOCAL_AI_JAY_CODEX_BIN`, `LOCAL_AI_JAY_GEMINI_BIN`,
+`LOCAL_AI_JAY_ANTIGRAVITY_BIN`.
 
 ## Troubleshooting
 
@@ -133,6 +137,8 @@ Custom CLI locations: `LOCAL_AI_JAY_CLAUDE_BIN`, `LOCAL_AI_JAY_CODEX_BIN`, `LOCA
   after installing it, or set `LOCAL_AI_JAY_<NAME>_BIN`.
 - **A CLI is "Ready" but Test fails:** the error shown is the CLI's own, usually that it needs signing
   in. Run the CLI once in your terminal, sign in, and press Test again.
+- **Antigravity is slow to start:** `agy` itself takes roughly 15–35 seconds to start each run
+  (loading its plugins and MCP servers) before it answers. Fewer plugins in Antigravity means faster replies.
 - **Ollama / LM Studio "Not running":** start the app (and for LM Studio, start its local server).
 - Logs: `~/.local-ai-jay/logs/requests.log`.
 

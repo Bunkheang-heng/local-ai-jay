@@ -1,4 +1,4 @@
-import { createCliProvider, claudeSpec, codexSpec, geminiSpec } from './cli.js';
+import { createCliProvider, claudeSpec, codexSpec, geminiSpec, antigravitySpec } from './cli.js';
 import { createOpenAICompatProvider, CLOUD_SPECS, localSpecs } from './openai-compat.js';
 
 /** Every provider local-ai-jay knows about, in display order. */
@@ -8,6 +8,7 @@ export function createRegistry({ store, env = process.env, fetchImpl } = {}) {
     createCliProvider(claudeSpec, { env }),
     createCliProvider(codexSpec, { env }),
     createCliProvider(geminiSpec, { env }),
+    createCliProvider(antigravitySpec, { env }),
     ...localSpecs(env).map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
     ...CLOUD_SPECS.map((s) => createOpenAICompatProvider(s, { getKey, fetchImpl })),
   ];

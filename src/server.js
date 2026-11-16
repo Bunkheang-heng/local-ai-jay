@@ -80,6 +80,7 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
   function settingsFor(workdir) {
     return {
       workspace: paths.workspace,
+      stateDir: paths.state,
       allowedDirs: config.allowedDirs,
       access: config.cliAccess,
       timeoutMs: (config.cliTimeoutSeconds || 600) * 1000,

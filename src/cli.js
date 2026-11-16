@@ -244,6 +244,7 @@ async function cmdAsk(values, rest) {
         params: pickParams({}),
         settings: {
           workspace: paths.workspace,
+          stateDir: paths.state,
           allowedDirs: config.allowedDirs,
           access: config.cliAccess,
           timeoutMs: (config.cliTimeoutSeconds || 600) * 1000,

@@ -209,3 +209,76 @@ test('runLines streams stdout, feeds stdin and reports failures', async () => {
   const slow = runLines({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'], name: 'slow', timeoutMs: 200 });
   await assert.rejects(async () => { for await (const _ of slow) { /* drain */ } }, /longer than/);
 });
+
+test('antigravity parser streams text across steps and reads the result', async () => {
+  const { antigravitySpec } = await import('../src/providers/cli.js');
+  const st = {};
+  const lines = [
+    { event: 'init', init: { model: 'x', permission_mode: 'request-review' } },
+    { event: 'step_update', step_update: { step_index: 0, state: 'DONE', step_type: 'user_input' } },
+    { event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Let me look.' } },
+    { event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: '\n' } },
+    { event: 'step_update', step_update: { step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'read_file' } },
+    { event: 'step_update', step_update: { step_index: 3, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'It is 51.' } },
+    { event: 'result', result: { status: 'SUCCESS', response: 'It is 51.\n', usage: { input_tokens: 20, output_tokens: 4 } } },
+  ];
+  const events = lines.flatMap((l) => antigravitySpec.parseLine(JSON.stringify(l), st));
+  assert.deepEqual(events, [
+    { type: 'text', text: 'Let me look.' },
+    { type: 'text', text: '\n\nIt is 51.' },
+    { type: 'usage', inputTokens: 20, outputTokens: 4 },
+  ]);
+  assert.equal(st.done, true);
+
+  const bad = {};
+  antigravitySpec.parseLine('error: Error: empty prompt', bad);
+  assert.throws(() => antigravitySpec.parseLine(JSON.stringify({ event: 'result', result: { status: 'ERROR', error: 'quota exceeded' } }), bad), /quota exceeded/);
+});
+
+test('antigravity: prompt goes over stdin as NDJSON and access is enforced with deny rules', async () => {
+  const { antigravitySpec, antigravitySettings } = await import('../src/providers/cli.js');
+  const input = antigravitySpec.formatInput('hi "there"\n--model x');
+  assert.deepEqual(JSON.parse(input), { event: 'user', message: { role: 'user', content: 'hi "there"\n--model x' } });
+  assert.deepEqual(antigravitySettings('read-only').permissions.deny, ['write_file(*)', 'command(*)', 'mcp(*)']);
+  assert.deepEqual(antigravitySettings('edit').permissions.deny, ['command(*)', 'mcp(*)']);
+  assert.deepEqual(antigravitySettings('read-only').permissions.allow, []);
+
+  const stateDir = tmp();
+  const args = antigravitySpec.buildArgs({ model: 'gemini-3.8-flash-low', dirs: ['/a'], access: 'read-only', stateDir });
+  const file = args[args.indexOf('--settings') + 1];
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), antigravitySettings('read-only'));
+  assert.ok(args.includes('--disable-slash-commands'));
+  assert.deepEqual(args.slice(-4), ['--model', 'gemini-3.8-flash-low', '--add-dir', '/a']);
+});
+
+test('antigravity provider: runs the CLI, stops as soon as the result arrives', async () => {
+  const { antigravitySpec, createCliProvider } = await import('../src/providers/cli.js');
+  const dir = tmp();
+  const fake = path.join(dir, 'fake-agy.mjs');
+  // A fake agy: echoes the prompt back, then lingers for 20s like the real one does.
+  fs.writeFileSync(fake, `#!/usr/bin/env node
+if (process.argv[2] === 'models') { console.log('Fetching available models...'); console.log('m-one\\tM One'); console.log('m-two\\tM Two'); process.exit(0); }
+let buf = '';
+process.stdin.on('data', (d) => { buf += d; });
+process.stdin.on('end', () => {
+  const msg = JSON.parse(buf.trim());
+  const say = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  say({ event: 'init', init: {} });
+  say({ event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'echo: ' + msg.message.content } });
+  say({ event: 'result', result: { status: 'SUCCESS', response: 'x', usage: { input_tokens: 1, output_tokens: 2 } } });
+  setTimeout(() => {}, 20000);
+});
+`, { mode: 0o755 });
+  if (process.platform === 'win32') return; // shebang scripts need a POSIX shell
+  const p = createCliProvider(antigravitySpec, { env: { ...process.env, LOCAL_AI_JAY_ANTIGRAVITY_BIN: fake } });
+  assert.deepEqual(await p.models(), ['default', 'm-one', 'm-two']);
+  const t0 = Date.now();
+  const events = [];
+  for await (const ev of p.chat({
+    messages: [{ role: 'user', content: 'ping' }],
+    model: null,
+    settings: { workspace: dir, stateDir: dir, allowedDirs: [], access: 'read-only', timeoutMs: 15000 },
+  })) events.push(ev);
+  assert.ok(Date.now() - t0 < 10000, 'should not wait for the CLI to linger');
+  assert.deepEqual(events, [{ type: 'text', text: 'echo: ping' }, { type: 'usage', inputTokens: 1, outputTokens: 2 }]);
+});

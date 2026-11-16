@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { buildPrompt } from '../prompt.js';
 import { findExecutable, runLines, runOnce, childEnv } from '../process.js';
 import { GatewayError } from '../util.js';
@@ -173,9 +175,93 @@ export const geminiSpec = {
   },
 };
 
+// ---------- Antigravity CLI: `agy --input-format stream-json --output-format stream-json` ----------
+// agy auto-approves tools in print mode (and many users set "toolPermission": "always-proceed"),
+// so access is enforced with session-only deny rules passed through --settings <file>.
+export function antigravitySettings(access) {
+  return {
+    toolPermission: 'request-review',
+    permissions: {
+      allow: [],
+      deny: access === 'edit' ? ['command(*)', 'mcp(*)'] : ['write_file(*)', 'command(*)', 'mcp(*)'],
+    },
+  };
+}
+
+function antigravitySettingsFile(stateDir, access) {
+  const file = path.join(stateDir, `antigravity-${access === 'edit' ? 'edit' : 'read-only'}.json`);
+  const body = `${JSON.stringify(antigravitySettings(access), null, 2)}\n`;
+  let current = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch { /* not yet written */ }
+  if (current !== body) {
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, body, { mode: 0o600 });
+  }
+  return file;
+}
+
+export const antigravitySpec = {
+  id: 'antigravity',
+  label: 'Antigravity',
+  bin: 'agy',
+  binEnv: 'LOCAL_AI_JAY_ANTIGRAVITY_BIN',
+  models: ['default'],
+  installHint: 'https://antigravity.google',
+  buildArgs({ model, dirs, access, stateDir }) {
+    const args = [
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--disable-slash-commands',
+      '--settings', antigravitySettingsFile(stateDir, access),
+    ];
+    if (model) args.push('--model', model);
+    for (const d of dirs) args.push('--add-dir', d);
+    return args;
+  },
+  // The prompt goes over stdin as one NDJSON message, never on the command line.
+  formatInput(prompt) {
+    return `${JSON.stringify({ event: 'user', message: { role: 'user', content: prompt } })}\n`;
+  },
+  async listModels(bin) {
+    const out = await runOnce(bin, ['models'], { timeoutMs: 30_000 });
+    const ids = out.split('\n')
+      .map((l) => l.split('\t')[0].trim())
+      .filter((id) => MODEL_NAME.test(id) && !/\s/.test(id) && !id.endsWith('...'));
+    return ['default', ...ids];
+  },
+  parseLine(line, st) {
+    const o = tryJson(line);
+    if (!o) {
+      if (/^error:/i.test(line)) st.lastError = line.replace(/^error:\s*/i, '');
+      return [];
+    }
+    const events = [];
+    if (o.event === 'step_update') {
+      const s = o.step_update || {};
+      if (s.step_type === 'agent_response' && typeof s.text_delta === 'string' && s.text_delta) {
+        if (st.textStep !== undefined && st.textStep !== s.step_index) st.pendingSep = true;
+        st.textStep = s.step_index;
+        // agy ends each response step with a lone newline; skip it so replies don't trail "\n".
+        if (!(s.state === 'DONE' && s.text_delta === '\n')) events.push(textEvent(st, s.text_delta));
+      }
+    } else if (o.event === 'result') {
+      const r = o.result || {};
+      st.done = true;
+      if (r.status && r.status !== 'SUCCESS') {
+        throw new GatewayError(502, `Antigravity: ${r.error || st.lastError || r.status}`, 'provider_error');
+      }
+      if (!st.emittedText && r.response) events.push(textEvent(st, r.response.replace(/\n$/, '')));
+      const u = r.usage || {};
+      events.push({ type: 'usage', inputTokens: u.input_tokens || 0, outputTokens: u.output_tokens || 0 });
+    }
+    return events;
+  },
+};
+
 /** Wraps a CLI spec into a provider. */
 export function createCliProvider(spec, { env = process.env } = {}) {
   let versionCache = null;
+  let modelCache = null;
   const locate = () => env[spec.binEnv] || findExecutable(spec.bin, env);
 
   return {
@@ -197,7 +283,19 @@ export function createCliProvider(spec, { env = process.env } = {}) {
       return { available: true, state: 'ready', detail: versionCache.version || bin, path: bin };
     },
 
-    async models() { return spec.models; },
+    async models() {
+      if (!spec.listModels) return spec.models;
+      const bin = locate();
+      if (!bin) return spec.models;
+      if (modelCache && modelCache.bin === bin && Date.now() - modelCache.at < 10 * 60_000) return modelCache.list;
+      try {
+        const list = await spec.listModels(bin);
+        modelCache = { bin, at: Date.now(), list: list.length ? list : spec.models };
+        return modelCache.list;
+      } catch {
+        return modelCache?.list || spec.models;
+      }
+    },
 
     async *chat({ messages, model, signal, settings }) {
       const bin = locate();
@@ -209,12 +307,13 @@ export function createCliProvider(spec, { env = process.env } = {}) {
         cwd,
         dirs: settings.allowedDirs || [],
         access: settings.access,
+        stateDir: settings.stateDir || path.join(path.dirname(settings.workspace), 'state'),
       });
       const st = {};
       const lines = runLines({
         command: bin,
         args,
-        input: prompt,
+        input: spec.formatInput ? spec.formatInput(prompt) : prompt,
         cwd,
         env: childEnv(spec.env),
         signal,
@@ -224,6 +323,8 @@ export function createCliProvider(spec, { env = process.env } = {}) {
       });
       for await (const line of lines) {
         for (const ev of spec.parseLine(line, st)) yield ev;
+        // Some CLIs linger after their final event; stop reading (and end the process) right away.
+        if (st.done) break;
       }
       if (spec.finish) for (const ev of spec.finish(st)) yield ev;
     },
