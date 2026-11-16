@@ -238,3 +238,28 @@ test('cloud key is validated before saving and only shown masked', async () => {
     assert.equal(p.state, 'no_key');
   } finally { g.server.close(); }
 });
+
+test('remote hosts: only listed addresses/names are accepted; missing addresses are retried', async () => {
+  const { listenExtra } = await import('../src/server.js');
+  const g = await startGateway([fakeCli('fake')]);
+  const port = new URL(g.base).port;
+  const status = (host) => new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/health', headers: { host } }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.end();
+  });
+  try {
+    assert.equal(await status('100.126.100.24:3000'), 403);
+    g.config.hosts = ['100.126.100.24'];
+    g.config.allowedHosts = ['yourbox.tail1234.ts.net'];
+    assert.equal(await status('100.126.100.24:3000'), 200);
+    assert.equal(await status('YOURBOX.tail1234.ts.net'), 200);
+    assert.equal(await status('evil.example'), 403);
+
+    // 192.0.2.1 is a documentation address that no machine has: listen fails and is retried.
+    const errors = [];
+    const servers = listenExtra(() => {}, { port: 0, hosts: ['192.0.2.1'], log: (h, e) => errors.push([h, e?.code]) });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(errors, [['192.0.2.1', 'EADDRNOTAVAIL']]);
+    servers.forEach((s) => s.close());
+  } finally { g.server.close(); }
+});

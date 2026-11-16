@@ -75,6 +75,22 @@ npx local-ai-jay ask -m gemini-web "Explain DNS like I'm five"
 - **Usage:** requests, errors, tokens and time per provider and per day, plus a live list of recent requests.
 - **Connect:** base URL, key, and ready-to-copy snippets for curl, Python, Node and env vars.
 
+## Use it from your other devices (Tailscale)
+
+Run it on an always-on computer and reach it from your phone or laptop over
+[Tailscale](https://tailscale.com), a private network only your devices can join:
+
+```bash
+npx local-ai-jay --host 100.x.y.z    # that computer's Tailscale address (tailscale ip -4); remembered
+```
+
+It keeps listening on `127.0.0.1` and also listens on that address, so any device signed in to your
+Tailscale can open `http://100.x.y.z:3000/#key=…` (the full link is printed at start) or use
+`http://100.x.y.z:3000/v1` as an OpenAI base URL. Tailscale encrypts the traffic. If Tailscale
+isn't up yet after a reboot, it keeps retrying. `--allow-host <name>` also accepts a MagicDNS
+name, and `--local-only` goes back to this computer only. `--host 0.0.0.0` is refused on purpose:
+never put the gateway on the open internet.
+
 ## Use it from code
 
 ```python
@@ -134,7 +150,7 @@ npx local-ai-jay ask "<prompt>"      # one answer in the terminal, no server
 
 ## Security
 
-- Listens on `127.0.0.1` only. No other computer can reach it.
+- Listens on `127.0.0.1` only, unless you add a private address with `--host`.
 - Every `/v1` and `/api` call needs the API key (`Authorization: Bearer …` or `x-api-key`), compared
   in constant time. The key is made on first run and stored with owner-only permissions.
 - Requests whose `Host` isn't `localhost`/`127.0.0.1` are refused, which blocks DNS-rebinding attacks

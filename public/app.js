@@ -1,5 +1,7 @@
 // local-ai-jay console. Plain JS, no build step.
 const KEY_STORE = 'local-ai-jay.key';
+const CHATS_STORE = 'local-ai-jay.chats';
+const MAX_CHATS = 60;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 
@@ -16,17 +18,39 @@ function el(tag, attrs = {}, ...children) {
   return n;
 }
 
+const store = {
+  get(k, fallback = null) { try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch { return fallback; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+};
+
+// Constant SVG markup only (never user content).
+const ICONS = {
+  copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6a2.5 2.5 0 0 0-2.5-2.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  retry: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
+  spark: '<svg viewBox="0 0 24 24"><path d="M12 2.5l7.5 9.5-7.5 9.5-7.5-9.5z"/></svg>',
+};
+function icon(name) {
+  const t = document.createElement('template');
+  t.innerHTML = ICONS[name];
+  return t.content.firstChild;
+}
+
 // ---------------- key handling ----------------
 let apiKey = null;
 const initialHash = location.hash;
 function readKey() {
   const m = location.hash.match(/key=([A-Za-z0-9_-]+)/);
   if (m) {
-    try { localStorage.setItem(KEY_STORE, m[1]); } catch { /* private mode */ }
+    store.set(KEY_STORE, m[1]);
     history.replaceState(null, '', location.pathname);
     return m[1];
   }
-  try { return localStorage.getItem(KEY_STORE); } catch { return null; }
+  return store.get(KEY_STORE);
 }
 
 async function api(path, opts = {}) {
@@ -42,11 +66,11 @@ async function api(path, opts = {}) {
 
 function showSignIn(message) {
   $('#signin').hidden = false;
-  $$('.tab-panel').forEach((p) => { p.hidden = true; });
-  $('.tabs').hidden = true;
+  $('#app').hidden = true;
   const err = $('#signin-error');
   err.hidden = !message;
   err.textContent = message || '';
+  setTimeout(() => $('#signin-key').focus(), 0);
 }
 
 $('#signin-form').addEventListener('submit', async (e) => {
@@ -54,9 +78,9 @@ $('#signin-form').addEventListener('submit', async (e) => {
   apiKey = $('#signin-key').value.trim();
   try {
     await fetch('/api/info', { headers: { authorization: `Bearer ${apiKey}` } }).then((r) => { if (!r.ok) throw new Error(); });
-    try { localStorage.setItem(KEY_STORE, apiKey); } catch { /* ignore */ }
+    store.set(KEY_STORE, apiKey);
     $('#signin').hidden = true;
-    $('.tabs').hidden = false;
+    $('#app').hidden = false;
     boot();
   } catch {
     showSignIn('That key was not accepted.');
@@ -71,126 +95,477 @@ function toast(msg) {
   toast.timer = setTimeout(() => { t.hidden = true; }, 2600);
 }
 
-async function copy(text) {
-  try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed: select and copy by hand'); }
+async function copy(text, quiet = false) {
+  try { await navigator.clipboard.writeText(text); if (!quiet) toast('Copied'); return true; } catch { toast('Copy failed: select and copy by hand'); return false; }
 }
 
+function flashCopied(btn, label) {
+  btn.textContent = '';
+  btn.append(icon('check'));
+  if (label) btn.append(' Copied');
+  setTimeout(() => { btn.textContent = ''; btn.append(icon('copy')); if (label) btn.append(` ${label}`); }, 1400);
+}
+
+// ---------------- sidebar ----------------
+const mobile = () => matchMedia('(max-width: 820px)').matches;
+function setSidebar(open) {
+  if (mobile()) {
+    document.body.classList.toggle('sb-open', open);
+    $('#scrim').hidden = !open;
+  } else {
+    document.body.classList.toggle('sb-closed', !open);
+    store.set('local-ai-jay.sidebar', open ? 'open' : 'closed');
+  }
+}
+if (store.get('local-ai-jay.sidebar') === 'closed') document.body.classList.add('sb-closed');
+$('#sb-open').addEventListener('click', () => setSidebar(true));
+$('#sb-collapse').addEventListener('click', () => setSidebar(false));
+$('#scrim').addEventListener('click', () => setSidebar(false));
+const closeOnMobile = () => { if (mobile()) setSidebar(false); };
+
 // ---------------- tabs ----------------
+const TAB_TITLES = { providers: 'Providers', usage: 'Usage', connect: 'Connect' };
 let currentTab = 'playground';
 function showTab(name) {
   currentTab = name;
-  $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   $$('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
-  try { localStorage.setItem('local-ai-jay.tab', name); } catch { /* ignore */ }
+  store.set('local-ai-jay.tab', name);
+  updateTitle();
+  renderRecents();
   if (name === 'providers') loadProviders();
   if (name === 'usage') loadUsage();
   if (name === 'connect') loadConnect();
-  if (name === 'playground') loadModels();
+  if (name === 'playground') { loadModels(); input.focus(); }
 }
-$$('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+$$('.nav-item').forEach((b) => b.addEventListener('click', () => { showTab(b.dataset.tab); closeOnMobile(); }));
 
-// ---------------- tiny safe markdown: code fences + inline code ----------------
-function renderText(target, text) {
-  target.textContent = '';
-  const parts = text.split(/```/);
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const nl = part.indexOf('\n');
-      const body = nl >= 0 ? part.slice(nl + 1) : part;
-      target.append(el('pre', {}, el('code', { text: body.replace(/\n$/, '') })));
-    } else {
-      const bits = part.split(/`([^`\n]+)`/);
-      bits.forEach((b, j) => target.append(j % 2 ? el('code', { text: b }) : document.createTextNode(b)));
+function updateTitle() {
+  const t = currentTab === 'playground' ? (current()?.title || '') : TAB_TITLES[currentTab];
+  $('#topbar-title').textContent = t;
+  document.title = t ? `${t} · local-ai-jay` : 'local-ai-jay';
+}
+
+// ---------------- markdown (safe: builds DOM nodes, never HTML strings) ----------------
+const SAFE_URL = /^(https?:|mailto:)/i;
+
+function inline(text) {
+  const out = [];
+  const re = /(`+)([\s\S]+?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*(?!\s)([\s\S]+?)\*|(?<![\w])_(?!\s)([\s\S]+?)_(?![\w])|\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|(https?:\/\/[^\s<>()]+[^\s<>().,:;"'!?\]])|\n/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+    last = re.lastIndex;
+    if (m[0] === '\n') out.push(el('br'));
+    else if (m[1]) out.push(el('code', { text: m[2].trim() || m[2] }));
+    else if (m[3] != null || m[4] != null) out.push(el('strong', {}, inline(m[3] ?? m[4])));
+    else if (m[5] != null) out.push(el('del', {}, inline(m[5])));
+    else if (m[6] != null || m[7] != null) out.push(el('em', {}, inline(m[6] ?? m[7])));
+    else if (m[8] != null) {
+      out.push(SAFE_URL.test(m[9])
+        ? el('a', { href: m[9], target: '_blank', rel: 'noopener noreferrer' }, inline(m[8]))
+        : document.createTextNode(m[0]));
+    } else if (m[10]) out.push(el('a', { href: m[10], target: '_blank', rel: 'noopener noreferrer', text: m[10] }));
+  }
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+
+function codeBlock(lang, body) {
+  const btn = el('button', { class: 'codeblock-copy', type: 'button' }, icon('copy'), ' Copy');
+  btn.addEventListener('click', async () => { if (await copy(body, true)) flashCopied(btn, 'Copy'); });
+  return el('div', { class: 'codeblock' },
+    el('div', { class: 'codeblock-head' }, el('span', { text: lang || 'code' }), btn),
+    el('pre', {}, el('code', { text: body })));
+}
+
+const RE = {
+  fence: /^\s*(```+|~~~+)\s*([\w+#.-]*)/,
+  heading: /^(#{1,6})\s+(.*?)\s*#*\s*$/,
+  hr: /^\s*([-*_])(\s*\1){2,}\s*$/,
+  quote: /^\s*>\s?/,
+  item: /^(\s*)([-*+]|\d+[.)])\s+(.*)$/,
+  tableSep: /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/,
+};
+const indentOf = (s) => s.match(/^\s*/)[0].replace(/\t/g, '    ').length;
+const splitRow = (s) => s.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+
+function blocks(text) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  const startsBlock = (l, next) => RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.item.test(l)
+    || (l.includes('|') && next != null && RE.tableSep.test(next));
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    let m = line.match(RE.fence);
+    if (m) {
+      const fence = m[1];
+      const body = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith(fence)) body.push(lines[i++]);
+      i++;
+      out.push(codeBlock(m[2], body.join('\n')));
+      continue;
     }
+    if ((m = line.match(RE.heading))) {
+      out.push(el(`h${Math.min(m[1].length, 4)}`, {}, inline(m[2])));
+      i++;
+      continue;
+    }
+    if (RE.hr.test(line)) { out.push(el('hr')); i++; continue; }
+    if (RE.quote.test(line)) {
+      const body = [];
+      while (i < lines.length && lines[i].trim() && RE.quote.test(lines[i])) body.push(lines[i++].replace(RE.quote, ''));
+      out.push(el('blockquote', {}, blocks(body.join('\n'))));
+      continue;
+    }
+    if (line.includes('|') && RE.tableSep.test(lines[i + 1] || '')) {
+      const head = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(splitRow(lines[i++]));
+      out.push(el('table', {},
+        el('thead', {}, el('tr', {}, head.map((h) => el('th', {}, inline(h))))),
+        el('tbody', {}, rows.map((r) => el('tr', {}, head.map((_, j) => el('td', {}, inline(r[j] || ''))))))));
+      continue;
+    }
+    if ((m = line.match(RE.item))) {
+      const base = indentOf(line);
+      const ordered = /\d/.test(m[2]);
+      const list = el(ordered ? 'ol' : 'ul');
+      if (ordered && parseInt(m[2], 10) !== 1) list.setAttribute('start', parseInt(m[2], 10));
+      while (i < lines.length) {
+        const im = lines[i].match(RE.item);
+        if (!im || indentOf(lines[i]) !== base || /\d/.test(im[2]) !== ordered) break;
+        const body = [im[3]];
+        i++;
+        while (i < lines.length) {
+          const l = lines[i];
+          if (!l.trim()) {
+            const nxt = lines[i + 1];
+            if (nxt != null && nxt.trim() && indentOf(nxt) > base) { body.push(''); i++; continue; }
+            break;
+          }
+          if (indentOf(l) > base) { body.push(l.slice(Math.min(indentOf(l), base + (im[2].length + 1)))); i++; continue; }
+          if (RE.item.test(l) || startsBlock(l, lines[i + 1])) break;
+          body.push(l); // lazy continuation
+          i++;
+        }
+        const inner = blocks(body.join('\n'));
+        const li = el('li');
+        if (inner.length && inner[0].tagName === 'P') { li.append(...inner[0].childNodes); inner.shift(); }
+        li.append(...inner);
+        list.append(li);
+      }
+      out.push(list);
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !(para.length && startsBlock(lines[i], lines[i + 1]))) para.push(lines[i++]);
+    out.push(el('p', {}, inline(para.join('\n'))));
+  }
+  return out;
+}
+
+function renderMarkdown(target, text) {
+  target.textContent = '';
+  target.append(...blocks(text));
+}
+
+// ---------------- chats (saved in this browser) ----------------
+let chats = [];
+let currentId = null;
+let streaming = null; // { controller, chatId }
+try { chats = JSON.parse(store.get(CHATS_STORE, '[]')); if (!Array.isArray(chats)) chats = []; } catch { chats = []; }
+const current = () => chats.find((c) => c.id === currentId) || null;
+
+function saveChats() {
+  chats.sort((a, b) => b.updated - a.updated);
+  chats = chats.slice(0, MAX_CHATS);
+  while (!store.set(CHATS_STORE, JSON.stringify(chats)) && chats.length > 1) chats.pop();
+}
+
+function newChatObject() {
+  return { id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, title: '', messages: [], system: '', model: '', updated: Date.now() };
+}
+
+function renderRecents() {
+  const box = $('#recents');
+  box.textContent = '';
+  const list = chats.filter((c) => c.messages.length);
+  if (!list.length) { box.append(el('div', { class: 'recents-empty', text: 'Your chats will show up here.' })); return; }
+  for (const c of list) {
+    const del = el('button', { class: 'recent-del', type: 'button', 'aria-label': `Delete “${c.title}”`, title: 'Delete' }, icon('trash'));
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete “${c.title}”?`)) return;
+      if (streaming?.chatId === c.id) streaming.controller.abort();
+      chats = chats.filter((x) => x.id !== c.id);
+      saveChats();
+      if (currentId === c.id) startNewChat(); else renderRecents();
+    });
+    const open = el('button', { class: 'recent-open', type: 'button', text: c.title || 'Untitled', title: c.title });
+    open.addEventListener('click', () => { openChat(c.id); closeOnMobile(); });
+    box.append(el('div', { class: `recent${c.id === currentId && currentTab === 'playground' ? ' active' : ''}` }, open, del));
+  }
+}
+
+function openChat(id) {
+  if (streaming && streaming.chatId !== id) streaming.controller.abort();
+  currentId = id;
+  const c = current();
+  store.set('local-ai-jay.current', id);
+  $('#pg-system').value = c?.system || '';
+  $('#pg-system').hidden = true;
+  syncSystemChip();
+  if (c?.model) setModel(c.model);
+  if (currentTab !== 'playground') showTab('playground');
+  renderThread();
+  renderRecents();
+  updateTitle();
+  input.focus();
+}
+
+function startNewChat() {
+  streaming?.controller.abort();
+  currentId = null;
+  store.del('local-ai-jay.current');
+  $('#pg-system').value = '';
+  $('#pg-system').hidden = true;
+  syncSystemChip();
+  if (currentTab !== 'playground') showTab('playground');
+  renderThread();
+  renderRecents();
+  updateTitle();
+  input.focus();
+}
+$('#pg-new').addEventListener('click', () => { startNewChat(); closeOnMobile(); });
+$('#top-new').addEventListener('click', startNewChat);
+
+// ---------------- chat view ----------------
+const thread = $('#pg-log');
+const inner = $('#thread-inner');
+const input = $('#pg-input');
+let stick = true;
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5) return 'Up late? What are we working on?';
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function scrollDown(force = false) {
+  if (force) stick = true;
+  if (stick) thread.scrollTop = thread.scrollHeight;
+}
+thread.addEventListener('scroll', () => {
+  const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
+  stick = near;
+  $('#to-bottom').hidden = near;
+});
+$('#to-bottom').addEventListener('click', () => { thread.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' }); });
+
+function actionBtn(name, label, onClick) {
+  const b = el('button', { class: 'act', type: 'button', 'aria-label': label, title: label }, icon(name));
+  b.addEventListener('click', onClick);
+  return b;
+}
+function copyBtn(getText) {
+  const b = actionBtn('copy', 'Copy', async () => { if (await copy(getText(), true)) flashCopied(b); });
+  return b;
+}
+
+function metaText(m) {
+  const bits = [m.model];
+  if (m.stopped) bits.push('stopped');
+  else if (m.secs != null) bits.push(`${m.secs}s`);
+  if (m.usage) bits.push(`${m.usage.prompt_tokens} in / ${m.usage.completion_tokens} out`);
+  return bits.filter(Boolean).join(' · ');
+}
+
+function reasoningBlock(text, open = false) {
+  const body = el('div', { class: 'reasoning-body', text });
+  const d = el('details', { class: 'reasoning' }, el('summary', {}, icon('chevron'), 'Thinking'), body);
+  d.open = open;
+  return { node: d, body };
+}
+
+function userView(m, idx) {
+  const bubble = el('div', { class: 'bubble', text: m.content });
+  const wrap = el('div', { class: 'msg user' }, bubble);
+  const edit = actionBtn('edit', 'Edit', () => startEdit(wrap, idx));
+  wrap.append(el('div', { class: 'msg-actions' }, copyBtn(() => m.content), edit));
+  return wrap;
+}
+
+function assistantView(m, isLast) {
+  const bubble = el('div', { class: 'bubble' });
+  renderMarkdown(bubble, m.content || (m.stopped ? '' : '(empty reply)'));
+  const wrap = el('div', { class: 'msg assistant' });
+  if (m.reasoning) wrap.append(reasoningBlock(m.reasoning).node);
+  wrap.append(bubble);
+  const actions = el('div', { class: 'msg-actions' }, copyBtn(() => m.content));
+  if (isLast) actions.append(actionBtn('retry', 'Retry', () => retry()));
+  actions.append(el('span', { class: 'meta', text: metaText(m) }));
+  wrap.append(actions);
+  return wrap;
+}
+
+function renderThread() {
+  const c = current();
+  const msgs = c?.messages || [];
+  inner.textContent = '';
+  const lastAssistant = msgs.length && msgs[msgs.length - 1].role === 'assistant' ? msgs.length - 1 : -1;
+  msgs.forEach((m, idx) => inner.append(m.role === 'user' ? userView(m, idx) : assistantView(m, idx === lastAssistant)));
+  const empty = !msgs.length;
+  $('#tab-playground').classList.toggle('is-empty', empty);
+  $('#pg-empty').hidden = !empty;
+  $('#welcome-title').textContent = greeting();
+  input.placeholder = empty ? 'How can I help you today?' : 'Reply…';
+  syncSend();
+  requestAnimationFrame(() => scrollDown(true));
+}
+
+function startEdit(wrap, idx) {
+  if (streaming) return;
+  const c = current();
+  const ta = el('textarea', { 'aria-label': 'Edit message' });
+  ta.value = c.messages[idx].content;
+  const cancel = el('button', { class: 'btn small', type: 'button', text: 'Cancel' });
+  const save = el('button', { class: 'btn small primary', type: 'button', text: 'Save & send' });
+  const box = el('div', { class: 'edit-box' }, ta, el('div', { class: 'edit-actions' }, cancel, save));
+  wrap.replaceChildren(box);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  cancel.addEventListener('click', renderThread);
+  const submit = () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    c.messages = c.messages.slice(0, idx);
+    c.messages.push({ role: 'user', content: text });
+    if (idx === 0) c.title = titleFrom(text);
+    c.updated = Date.now();
+    saveChats();
+    renderThread();
+    generate();
+  };
+  save.addEventListener('click', submit);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') renderThread();
   });
 }
 
-// ---------------- playground ----------------
-const chat = { messages: [], controller: null };
-const emptyState = $('#pg-empty');
+const titleFrom = (text) => { const t = text.replace(/\s+/g, ' ').trim(); return t.length > 60 ? `${t.slice(0, 57)}…` : t; };
 
-async function loadModels() {
-  const sel = $('#pg-model');
-  const prev = sel.value || (() => { try { return localStorage.getItem('local-ai-jay.model'); } catch { return null; } })();
-  try {
-    const { data } = await api('/v1/models');
-    sel.textContent = '';
-    const groups = new Map();
-    for (const m of data) {
-      const g = m.owned_by === 'local-ai-jay' ? 'Routing' : m.owned_by;
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push(m.id);
-    }
-    for (const [g, ids] of groups) {
-      const og = el('optgroup', { label: g });
-      ids.forEach((id) => og.append(el('option', { value: id, text: id })));
-      sel.append(og);
-    }
-    if (prev && data.some((m) => m.id === prev)) sel.value = prev;
-  } catch (err) {
-    if (err.message !== 'unauthorized') toast(`Couldn't load models: ${err.message}`);
-  }
-}
-$('#pg-model').addEventListener('change', (e) => { try { localStorage.setItem('local-ai-jay.model', e.target.value); } catch { /* ignore */ } });
-$('#pg-system-toggle').addEventListener('click', () => { const s = $('#pg-system'); s.hidden = !s.hidden; if (!s.hidden) s.focus(); });
-$('#pg-new').addEventListener('click', () => {
-  chat.controller?.abort();
-  chat.messages = [];
-  $('#pg-log').textContent = '';
-  $('#pg-log').append(emptyState);
-  emptyState.hidden = false;
-  $('#pg-input').focus();
-});
-
-function addMsg(role, text = '') {
-  emptyState.hidden = true;
-  const bubble = el('div', { class: 'bubble' });
-  renderText(bubble, text);
-  const wrap = el('div', { class: `msg ${role}` }, bubble);
-  $('#pg-log').append(wrap);
-  $('#pg-log').scrollTop = $('#pg-log').scrollHeight;
-  return { wrap, bubble };
-}
-
-const input = $('#pg-input');
+// ---------------- composer ----------------
+function syncSend() { $('#pg-send').disabled = !input.value.trim(); }
+function autosize() { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 240)}px`; }
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#pg-form').requestSubmit(); }
 });
-input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; });
-$('#pg-stop').addEventListener('click', () => chat.controller?.abort());
+input.addEventListener('input', () => { autosize(); syncSend(); });
+$('#pg-stop').addEventListener('click', () => streaming?.controller.abort());
 
-$('#pg-form').addEventListener('submit', async (e) => {
+function syncSystemChip() { $('#pg-system-toggle').classList.toggle('on', !!$('#pg-system').value.trim()); }
+$('#pg-system-toggle').addEventListener('click', () => { const s = $('#pg-system'); s.hidden = !s.hidden; (s.hidden ? input : s).focus(); });
+$('#pg-system').addEventListener('input', () => {
+  syncSystemChip();
+  const c = current();
+  if (c) { c.system = $('#pg-system').value; saveChats(); }
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); startNewChat(); }
+  if (e.key === 'Escape' && streaming) streaming.controller.abort();
+});
+
+$('#pg-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text || chat.controller) return;
+  if (!text || streaming) return;
+  let c = current();
+  if (!c) {
+    c = newChatObject();
+    c.system = $('#pg-system').value;
+    chats.unshift(c);
+    currentId = c.id;
+    store.set('local-ai-jay.current', c.id);
+  }
+  // A question whose reply failed earlier is replaced by the new one.
+  if (c.messages.length && c.messages[c.messages.length - 1].role === 'user') c.messages.pop();
+  if (!c.title) c.title = titleFrom(text);
+  c.messages.push({ role: 'user', content: text });
+  c.updated = Date.now();
+  saveChats();
   input.value = '';
-  input.style.height = '';
-  addMsg('user', text);
-  chat.messages.push({ role: 'user', content: text });
+  autosize();
+  renderThread();
+  renderRecents();
+  updateTitle();
+  generate();
+});
 
+function retry() {
+  const c = current();
+  if (!c || streaming) return;
+  if (c.messages[c.messages.length - 1]?.role === 'assistant') c.messages.pop();
+  saveChats();
+  renderThread();
+  generate();
+}
+
+function setBusy(busy) {
+  $('#pg-send').hidden = busy;
+  $('#pg-stop').hidden = !busy;
+}
+
+async function generate() {
+  const c = current();
+  if (!c || !c.messages.length) return;
   const model = $('#pg-model').value || 'auto';
-  const system = $('#pg-system').value.trim();
-  const messages = system ? [{ role: 'system', content: system }, ...chat.messages] : chat.messages;
-  const { wrap, bubble } = addMsg('assistant');
-  bubble.classList.add('cursor');
-  const meta = el('div', { class: 'meta', text: model });
-  let reasoningBox = null;
-  wrap.append(meta);
+  c.model = model;
+  const system = (c.system || '').trim();
+  const messages = [...(system ? [{ role: 'system', content: system }] : []), ...c.messages.map(({ role, content }) => ({ role, content }))];
 
-  chat.controller = new AbortController();
-  $('#pg-send').hidden = true;
-  $('#pg-stop').hidden = false;
+  const bubble = el('div', { class: 'bubble' }, el('div', { class: 'thinking' }, icon('spark')));
+  const meta = el('span', { class: 'meta', text: model });
+  const wrap = el('div', { class: 'msg assistant' }, bubble, el('div', { class: 'msg-actions' }, meta));
+  inner.append(wrap);
+  scrollDown(true);
+
+  const controller = new AbortController();
+  streaming = { controller, chatId: c.id };
+  setBusy(true);
   const t0 = performance.now();
   let answer = '';
   let reasoning = '';
   let usedModel = model;
   let usage = null;
+  let reasoningView = null;
+  let frame = 0;
+  const paint = () => {
+    frame = 0;
+    if (reasoningView) reasoningView.body.textContent = reasoning;
+    if (answer) { renderMarkdown(bubble, answer); bubble.classList.add('streaming'); }
+    meta.textContent = usedModel;
+    scrollDown();
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
+
   try {
     const res = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true } }),
-      signal: chat.controller.signal,
+      signal: controller.signal,
     });
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
@@ -218,41 +593,84 @@ $('#pg-form').addEventListener('submit', async (e) => {
         const d = o.choices?.[0]?.delta;
         if (d?.reasoning_content || d?.reasoning) {
           reasoning += d.reasoning_content || d.reasoning;
-          if (!reasoningBox) {
-            reasoningBox = el('div');
-            wrap.insertBefore(el('details', { class: 'reasoning' }, el('summary', { text: 'Thinking' }), reasoningBox), bubble);
-          }
-          reasoningBox.textContent = reasoning;
+          if (!reasoningView) { reasoningView = reasoningBlock('', true); wrap.insertBefore(reasoningView.node, bubble); }
         }
-        if (d?.content) {
-          answer += d.content;
-          renderText(bubble, answer);
-        }
-        meta.textContent = usedModel;
-        $('#pg-log').scrollTop = $('#pg-log').scrollHeight;
+        if (d?.content) answer += d.content;
+        schedule();
       }
     }
-    chat.messages.push({ role: 'assistant', content: answer });
-    const secs = ((performance.now() - t0) / 1000).toFixed(1);
-    meta.textContent = `${usedModel} · ${secs}s${usage ? ` · ${usage.prompt_tokens} in / ${usage.completion_tokens} out` : ''}`;
-    if (!answer) renderText(bubble, '(empty reply)');
+    c.messages.push({ role: 'assistant', content: answer, reasoning: reasoning || undefined, model: usedModel, secs: +((performance.now() - t0) / 1000).toFixed(1), usage: usage || undefined });
   } catch (err) {
+    cancelAnimationFrame(frame);
     if (err.name === 'AbortError') {
-      if (answer) chat.messages.push({ role: 'assistant', content: answer });
-      meta.textContent = `${usedModel} · stopped`;
-      if (!answer) wrap.remove();
+      if (answer || reasoning) c.messages.push({ role: 'assistant', content: answer, reasoning: reasoning || undefined, model: usedModel, stopped: true });
     } else {
-      wrap.classList.add('error');
-      renderText(bubble, answer ? `${answer}\n\n⚠ ${err.message}` : err.message);
-      chat.messages.pop(); // let the user retry the same question
+      if (answer) c.messages.push({ role: 'assistant', content: answer, reasoning: reasoning || undefined, model: usedModel, stopped: true });
+      c.updated = Date.now();
+      saveChats();
+      streaming = null;
+      setBusy(false);
+      if (currentId !== c.id) return;
+      renderThread();
+      const again = el('button', { class: 'btn small', type: 'button' }, icon('retry'), 'Retry');
+      again.addEventListener('click', () => {
+        if (c.messages[c.messages.length - 1]?.role === 'assistant') c.messages.pop();
+        renderThread();
+        generate();
+      });
+      inner.append(el('div', { class: 'msg assistant error' },
+        el('div', { class: 'bubble', text: err.message }),
+        el('div', { class: 'msg-actions' }, again, el('span', { class: 'meta', text: usedModel }))));
+      scrollDown(true);
+      return;
     }
-  } finally {
-    bubble.classList.remove('cursor');
-    chat.controller = null;
-    $('#pg-send').hidden = false;
-    $('#pg-stop').hidden = true;
-    input.focus();
   }
+  cancelAnimationFrame(frame);
+  c.updated = Date.now();
+  saveChats();
+  streaming = null;
+  setBusy(false);
+  if (currentId === c.id) { renderThread(); renderRecents(); input.focus(); }
+}
+
+// ---------------- models ----------------
+function syncModelLabel() { $('#model-label').textContent = $('#pg-model').value || $('#pg-model').dataset.want || 'auto'; }
+function setModel(id) {
+  const sel = $('#pg-model');
+  if ([...sel.options].some((o) => o.value === id)) sel.value = id;
+  else sel.dataset.want = id;
+  syncModelLabel();
+}
+
+async function loadModels() {
+  const sel = $('#pg-model');
+  const prev = sel.dataset.want || sel.value || store.get('local-ai-jay.model');
+  try {
+    const { data } = await api('/v1/models');
+    sel.textContent = '';
+    const groups = new Map();
+    for (const m of data) {
+      const g = m.owned_by === 'local-ai-jay' ? 'Routing' : m.owned_by;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(m.id);
+    }
+    for (const [g, ids] of groups) {
+      const og = el('optgroup', { label: g });
+      ids.forEach((id) => og.append(el('option', { value: id, text: id })));
+      sel.append(og);
+    }
+    if (prev && data.some((m) => m.id === prev)) sel.value = prev;
+    delete sel.dataset.want;
+    syncModelLabel();
+  } catch (err) {
+    if (err.message !== 'unauthorized') toast(`Couldn't load models: ${err.message}`);
+  }
+}
+$('#pg-model').addEventListener('change', (e) => {
+  store.set('local-ai-jay.model', e.target.value);
+  syncModelLabel();
+  const c = current();
+  if (c) { c.model = e.target.value; saveChats(); }
 });
 
 // ---------------- providers ----------------
@@ -281,7 +699,7 @@ function providerCard(p) {
   };
 
   if (p.available && !p.paused) {
-    const test = el('button', { class: 'ghost small', type: 'button', text: 'Test' });
+    const test = el('button', { class: 'btn small', type: 'button', text: 'Test' });
     test.addEventListener('click', () => busy(test, async () => {
       const r = await api(`/api/providers/${p.id}/test`, { method: 'POST' });
       result.hidden = false;
@@ -290,7 +708,7 @@ function providerCard(p) {
     }));
     actions.append(test);
   }
-  const toggle = el('button', { class: 'ghost small', type: 'button', text: p.paused ? 'Resume' : 'Pause' });
+  const toggle = el('button', { class: 'btn small', type: 'button', text: p.paused ? 'Resume' : 'Pause' });
   toggle.addEventListener('click', () => busy(toggle, async () => {
     await api(`/api/providers/${p.id}/${p.paused ? 'resume' : 'pause'}`, { method: 'POST' });
     toast(`${p.label} ${p.paused ? 'resumed' : 'paused'}`);
@@ -307,12 +725,12 @@ function providerCard(p) {
       const row = el('div', { class: 'pcard-actions' },
         el('code', { text: p.key.masked }),
         el('span', { class: 'muted small', text: p.key.enabled ? '' : '(switched off)' }));
-      const onoff = el('button', { class: 'ghost small', type: 'button', text: p.key.enabled ? 'Switch off' : 'Switch on' });
+      const onoff = el('button', { class: 'btn small', type: 'button', text: p.key.enabled ? 'Switch off' : 'Switch on' });
       onoff.addEventListener('click', () => busy(onoff, async () => {
         await api(`/api/providers/${p.id}/key`, { method: 'POST', body: JSON.stringify({ enabled: !p.key.enabled }) });
         loadProviders();
       }));
-      const del = el('button', { class: 'ghost small', type: 'button', text: 'Remove' });
+      const del = el('button', { class: 'btn small', type: 'button', text: 'Remove' });
       del.addEventListener('click', () => busy(del, async () => {
         if (!confirm(`Remove the ${p.label} key from this computer?`)) return;
         await api(`/api/providers/${p.id}/key`, { method: 'DELETE' });
@@ -325,7 +743,7 @@ function providerCard(p) {
       card.append(el('div', { class: 'muted small', text: `Using ${p.envKey} from your environment.` }));
     }
     const keyInput = el('input', { type: 'password', placeholder: p.key ? 'Replace key…' : 'Paste API key…', autocomplete: 'off', 'aria-label': `${p.label} API key` });
-    const save = el('button', { class: 'primary small', type: 'submit', text: 'Save' });
+    const save = el('button', { class: 'btn small primary', type: 'submit', text: 'Save' });
     const form = el('form', { class: 'keyrow' }, keyInput, save);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -355,9 +773,10 @@ async function loadProviders(fresh = false) {
   }
 }
 $('#prov-refresh').addEventListener('click', async (e) => {
-  e.target.disabled = true;
+  const b = e.currentTarget;
+  b.disabled = true;
   await loadProviders(true);
-  e.target.disabled = false;
+  b.disabled = false;
   toast('Checked again');
 });
 
@@ -468,7 +887,7 @@ $('#c-reveal').addEventListener('click', () => { keyShown = !keyShown; renderKey
 $('[data-copy-key]').addEventListener('click', () => copy(apiKey));
 $('[data-copy="c-base"]').addEventListener('click', () => copy($('#c-base').textContent));
 $('#signout').addEventListener('click', () => {
-  try { localStorage.removeItem(KEY_STORE); } catch { /* ignore */ }
+  store.del(KEY_STORE);
   apiKey = null;
   showSignIn();
 });
@@ -494,12 +913,21 @@ async function loadConnect() {
 async function boot() {
   try {
     const info = await api('/api/info');
-    $('#ver').textContent = `v${info.version}`;
+    $('#ver').textContent = `local-ai-jay v${info.version} · running`;
+    $('#status-dot').classList.add('ok');
   } catch { return; }
-  let tab = 'playground';
-  try { tab = localStorage.getItem('local-ai-jay.tab') || tab; } catch { /* ignore */ }
+  const saved = store.get('local-ai-jay.current');
+  if (saved && chats.some((c) => c.id === saved)) {
+    currentId = saved;
+    const c = current();
+    $('#pg-system').value = c.system || '';
+    syncSystemChip();
+    if (c.model) setModel(c.model);
+  }
+  let tab = store.get('local-ai-jay.tab') || 'playground';
   const fromLink = initialHash.match(/tab=([a-z]+)/);
   if (fromLink) tab = fromLink[1];
+  renderThread();
   showTab(['playground', 'providers', 'usage', 'connect'].includes(tab) ? tab : 'playground');
   setInterval(() => { if (currentTab === 'usage' && !document.hidden) loadUsage(); }, 5000);
 }

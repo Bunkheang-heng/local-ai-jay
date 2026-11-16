@@ -7,7 +7,8 @@ import { getPaths } from './paths.js';
 import { loadConfig, saveConfig, addAllowedDir, removeAllowedDir, loadEnvFile, newApiKey } from './config.js';
 import { Store } from './store.js';
 import { createRegistry, parseModel } from './providers/index.js';
-import { createGateway, listen } from './server.js';
+import { createGateway, listen, listenExtra } from './server.js';
+import net from 'node:net';
 import { pickParams } from './providers/openai-compat.js';
 import { Browser } from './web/browser.js';
 import { WEB_SITES } from './web/provider.js';
@@ -39,6 +40,9 @@ ${bold('Options')}
       --disallow <dir>  Forget an allowed folder
       --allow-edits     Let the CLIs edit files in allowed folders (remembered)
       --read-only       Back to read-only (the default; remembered)
+      --host <ip>       Also listen on <ip>, e.g. your Tailscale address (remembered; repeatable)
+      --allow-host <n>  Also accept requests addressed to name <n>, e.g. a MagicDNS name (remembered)
+      --local-only      Forget --host/--allow-host: this computer only again
       --cors            Allow browser apps on other origins to call /v1 (remembered)
       --no-cors         Turn that off again
       --no-open         Don't open the browser
@@ -118,6 +122,22 @@ async function cmdStart(values) {
   if (values['read-only']) { config.cliAccess = 'read-only'; changed = true; }
   if (values.cors) { config.cors = true; changed = true; }
   if (values['no-cors']) { config.cors = false; changed = true; }
+  for (const h of values.host || []) {
+    const ip = h.replace(/^\[|\]$/g, '');
+    if (!net.isIP(ip)) throw new Error(`--host needs an IP address, got "${h}"`);
+    if (['0.0.0.0', '::'].includes(ip)) {
+      throw new Error('--host 0.0.0.0 would open the gateway to every network this computer is on. Use your Tailscale address (tailscale ip -4) instead.');
+    }
+    if (!config.hosts.includes(ip)) config.hosts.push(ip);
+    changed = true;
+  }
+  for (const n of values['allow-host'] || []) {
+    const name = n.trim().toLowerCase();
+    if (!/^[a-z0-9.-]+$/.test(name)) throw new Error(`--allow-host needs a host name, got "${n}"`);
+    if (!config.allowedHosts.includes(name)) config.allowedHosts.push(name);
+    changed = true;
+  }
+  if (values['local-only']) { config.hosts = []; config.allowedHosts = []; changed = true; }
   if (values.web && !config.web.enabled) { printWebWarning(); config.web.enabled = true; changed = true; }
   if (values['no-web']) { config.web.enabled = false; changed = true; }
   if (values['web-headless']) { config.web.headless = true; changed = true; }
@@ -144,12 +164,26 @@ async function cmdStart(values) {
   const gateway = createGateway({ config, store, registry, paths, version: pkg.version, log });
   const { server, port } = await listen(gateway.handler, { port: config.port, tryNext: !explicitPort });
   const url = consoleUrl(port, config.apiKey);
+  const extra = listenExtra(gateway.handler, {
+    port,
+    hosts: config.hosts,
+    log: (host, err) => console.log(err
+      ? `  ${yellow(`Can't listen on ${host}:${port} yet (${err.code || err.message}); retrying every 10s.`)}`
+      : `  ${green('✓')} Also listening on ${cyan(`http://${host.includes(':') ? `[${host}]` : host}:${port}`)}`),
+  });
 
   console.log('');
   console.log(`  ${bold('local-ai-jay')} ${dim(`v${pkg.version}`)}${firstRun ? dim('  (first run: made your API key)') : ''}`);
   console.log('');
   console.log(`  Console   ${cyan(url)}`);
   console.log(`  API       ${cyan(`http://127.0.0.1:${port}/v1`)}  ${dim('(OpenAI-compatible)')}`);
+  for (const h of config.hosts) {
+    const shown = h.includes(':') ? `[${h}]` : h;
+    console.log(`  Remote    ${cyan(`http://${shown}:${port}/#key=${config.apiKey}`)}  ${dim('(other devices on that network)')}`);
+  }
+  if (config.hosts.length) {
+    console.log(`  ${yellow('Reachable from other devices on')} ${config.hosts.join(', ')}. ${dim('Use a private network like Tailscale only.')}`);
+  }
   console.log(`  API key   ${config.apiKey}`);
   console.log(`  CLIs      ${config.cliAccess === 'edit' ? yellow('can edit files') : 'read-only'} in ${[paths.workspace, ...config.allowedDirs].join(', ')}`);
   if (port !== config.port) console.log(`  ${yellow(`Port ${config.port} was busy, using ${port}.`)}`);
@@ -169,6 +203,7 @@ async function cmdStart(values) {
     store.saveNow();
     logStream.end();
     if (hasBrowser()) getBrowser().close().catch(() => {});
+    for (const s of extra) s.close();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();
@@ -323,6 +358,9 @@ export async function main(argv) {
       'allow-edits': { type: 'boolean' },
       'read-only': { type: 'boolean' },
       cors: { type: 'boolean' },
+      host: { type: 'string', multiple: true },
+      'allow-host': { type: 'string', multiple: true },
+      'local-only': { type: 'boolean' },
       'no-cors': { type: 'boolean' },
       'no-open': { type: 'boolean' },
       web: { type: 'boolean' },

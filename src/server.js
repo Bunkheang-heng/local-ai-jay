@@ -496,7 +496,9 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
   async function handler(req, res) {
     try {
       // Only answer to localhost names: blocks DNS-rebinding attacks from web pages.
-      if (!LOCAL_HOSTS.has(hostnameOf(req.headers.host)) && !(config.allowedHosts || []).includes(hostnameOf(req.headers.host))) {
+      const reqHost = hostnameOf(req.headers.host);
+      if (!LOCAL_HOSTS.has(reqHost) && !(config.allowedHosts || []).map((h) => h.toLowerCase()).includes(reqHost)
+        && !(config.hosts || []).includes(reqHost)) {
         return sendError(res, 403, 'Host not allowed', 'forbidden_host');
       }
       const url = new URL(req.url, 'http://localhost');
@@ -525,6 +527,30 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
   }
 
   return { handler, statusOf, recent };
+}
+
+/**
+ * Also listens on `hosts` (e.g. a Tailscale address) on the same port. An address that doesn't
+ * exist yet (Tailscale still starting after a reboot) is retried every 10 seconds.
+ */
+export function listenExtra(handler, { port, hosts = [], log = () => {} }) {
+  const servers = [];
+  for (const host of hosts) {
+    const server = http.createServer(handler);
+    server.requestTimeout = 0;
+    server.headersTimeout = 60_000;
+    servers.push(server);
+    let warned = false;
+    const attempt = () => {
+      server.once('error', (err) => {
+        if (!warned) { log(host, err); warned = true; }
+        setTimeout(attempt, 10_000).unref();
+      });
+      server.listen(port, host, () => log(host, null));
+    };
+    attempt();
+  }
+  return servers;
 }
 
 export function listen(handler, { port, host = '127.0.0.1', tryNext = true } = {}) {

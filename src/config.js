@@ -21,6 +21,8 @@ function defaults() {
     allowedDirs: [],
     cliAccess: 'read-only',
     cors: false,
+    hosts: [],
+    allowedHosts: [],
     cliConcurrency: 2,
     cliTimeoutSeconds: 600,
     autoOrder: DEFAULT_AUTO_ORDER,
@@ -44,6 +46,8 @@ export function loadConfig(paths) {
   if (firstRun) config.apiKey = newApiKey();
   if (!['read-only', 'edit'].includes(config.cliAccess)) config.cliAccess = 'read-only';
   if (!Array.isArray(config.allowedDirs)) config.allowedDirs = [];
+  if (!Array.isArray(config.hosts)) config.hosts = [];
+  if (!Array.isArray(config.allowedHosts)) config.allowedHosts = [];
   if (!Array.isArray(config.autoOrder)) config.autoOrder = DEFAULT_AUTO_ORDER;
   config.web = { enabled: false, headless: false, timeoutSeconds: 300, ...(config.web || {}) };
   // Providers added in newer versions join the end of an older saved order.
