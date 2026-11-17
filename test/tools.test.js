@@ -112,7 +112,7 @@ test('gateway turns text tool calls into OpenAI tool_calls (non-streaming + stre
     assert.equal(j.choices[0].finish_reason, 'tool_calls');
     assert.equal(j.choices[0].message.content, 'I will read it.\n');
     assert.equal(j.choices[0].message.tool_calls[0].function.name, 'read_file');
-    assert.match(agent.lastMessages[0].content, /# Tools/);
+    assert.match(agent.lastMessages[0].content, /# How you use tools/);
 
     const text = await (await g.call({ ...base, stream: true })).text();
     const chunks = text.split('\n\n').filter((l) => l.startsWith('data: {')).map((l) => JSON.parse(l.slice(6)));
@@ -139,6 +139,6 @@ test('gateway turns text tool calls into OpenAI tool_calls (non-streaming + stre
 
     // tool_choice "none": no tool instructions, no parsing.
     await g.call({ ...base, tool_choice: 'none' });
-    assert.doesNotMatch(String(agent.lastMessages[0].content), /# Tools/);
+    assert.doesNotMatch(String(agent.lastMessages[0].content), /# How you use tools/);
   } finally { g.server.close(); }
 });
