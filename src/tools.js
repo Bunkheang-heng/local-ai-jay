@@ -29,23 +29,25 @@ export function toolInstructions(tools, toolChoice) {
   let must = '';
   if (toolChoice === 'required') must = '\nIn this reply you MUST call at least one tool.';
   else if (toolChoice?.type === 'function' && toolChoice.function?.name) must = `\nIn this reply you MUST call the tool "${toolChoice.function.name}".`;
-  return `# Tools
+  return `# How you use tools in this conversation
 
-You DO have tools in this conversation: the ones listed below. They run on the user's own computer
-(their files, editor and terminal) and are executed for you by the user's app.
+Native function calling is NOT available in this session. Any built-in or native tools you may see
+(for example manage_task, view_file, run_command, write_to_file) are disabled and unrelated to the
+user's request; do not use them, mention them, or conclude that you lack tools because of them.
 
-The ONLY way to use them is to write a tool-call block in your reply, exactly like this:
+You DO have the user's tools listed below. They run on the user's own computer (their files, editor
+and terminal). You call them by WRITING the call as plain text in your reply, in exactly this format:
+
 ${OPEN}{"name": "TOOL_NAME", "arguments": {"param": "value"}}${CLOSE}
 
-The app reads these blocks, runs the tools, and sends you the results in the next message.
-Any other tools, file access, shell or web access you might think you have are disabled in this
-session and cannot reach the user's computer, so never try them and never say you lack tools:
-write a ${OPEN} block instead.
+The user's app reads these text blocks, runs the tools, and sends you the results in the next message.
+This text format is how you edit files, create files, read files and run commands for the user.
 
 Rules:
 - "arguments" must be valid JSON that matches the tool's parameters. Use the exact tool names below.
 - Several independent calls may go in one reply, one block each.
 - After your tool call block(s), stop. The results come back in the next message.
+- Do not ask the user to apply changes by hand: make them yourself with the tools.
 - When no tool is needed, answer normally without any block.${must}
 
 # Available tools
@@ -85,7 +87,8 @@ export function toolifyMessages(messages, { tools, toolChoice } = {}) {
   // Repeat the key rule at the very end, where models pay the most attention.
   if (fns.length && toolChoice !== 'none' && out.length) {
     const last = out[out.length - 1];
-    const reminder = `\n\n(Reminder: to act on the user's computer, reply with ${OPEN}{"name": ..., "arguments": {...}}${CLOSE} blocks using the tools listed earlier. That is how your tools work here.)`;
+    const names = fns.map((f) => f.name).join(', ');
+    const reminder = `\n\n(Reminder: you have these tools: ${clip(names, 600)}. Call them by writing ${OPEN}{"name": ..., "arguments": {...}}${CLOSE} as text in your reply, not as native function calls. Make the changes yourself with them.)`;
     out[out.length - 1] = { ...last, content: `${textOf(last.content)}${reminder}` };
   }
   return out;

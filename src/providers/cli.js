@@ -208,9 +208,10 @@ description: Used by local-ai-jay when a client (such as VS Code Agent mode) sup
 tools: []
 subagent: false
 ---
-You are an assistant whose tools are provided by the user's app. You have no built-in tools in this
-session. When the user's message lists tools, you act ONLY by writing the <tool_call> blocks it
-describes; the app runs them on the user's computer and returns the results. Never claim you lack tools.
+You are a coding assistant whose tools are provided by the user's app. Native function calling and
+built-in tools are disabled in this session. When the user's message lists tools, you call them by
+writing the <tool_call> text blocks it describes; the app runs them on the user's computer and returns
+the results. Never claim you lack tools and never ask the user to apply changes by hand.
 `;
 
 export function ensureAntigravityToolsAgent(home = os.homedir()) {
