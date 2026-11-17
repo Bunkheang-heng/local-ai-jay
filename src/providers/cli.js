@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { buildPrompt } from '../prompt.js';
 import { findExecutable, runLines, runOnce, childEnv } from '../process.js';
@@ -178,24 +179,47 @@ export const geminiSpec = {
 // ---------- Antigravity CLI: `agy --input-format stream-json --output-format stream-json` ----------
 // agy auto-approves tools in print mode (and many users set "toolPermission": "always-proceed"),
 // so access is enforced with session-only deny rules passed through --settings <file>.
-export function antigravitySettings(access) {
-  return {
-    toolPermission: 'request-review',
-    permissions: {
-      allow: [],
-      deny: access === 'edit' ? ['command(*)', 'mcp(*)'] : ['write_file(*)', 'command(*)', 'mcp(*)'],
-    },
-  };
+export function antigravitySettings(access, toolMode = false) {
+  let deny = access === 'edit' ? ['command(*)', 'mcp(*)'] : ['write_file(*)', 'command(*)', 'mcp(*)'];
+  // When the client brings its own tools (e.g. VS Code Agent mode), the model must act only through
+  // them: its built-in tools would run on this machine, not the client's, so they're all blocked.
+  if (toolMode) deny = ['read_file(*)', 'write_file(*)', 'command(*)', 'mcp(*)', 'url(*)'];
+  return { toolPermission: 'request-review', permissions: { allow: [], deny } };
 }
 
-function antigravitySettingsFile(stateDir, access) {
-  const file = path.join(stateDir, `antigravity-${access === 'edit' ? 'edit' : 'read-only'}.json`);
-  const body = `${JSON.stringify(antigravitySettings(access), null, 2)}\n`;
+function antigravitySettingsFile(stateDir, access, toolMode = false) {
+  const name = toolMode ? 'client-tools' : access === 'edit' ? 'edit' : 'read-only';
+  const file = path.join(stateDir, `antigravity-${name}.json`);
+  const body = `${JSON.stringify(antigravitySettings(access, toolMode), null, 2)}\n`;
   let current = null;
   try { current = fs.readFileSync(file, 'utf8'); } catch { /* not yet written */ }
   if (current !== body) {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, body, { mode: 0o600 });
+  }
+  return file;
+}
+
+// A custom agy agent with no built-in tools, used when the client brings its own tools.
+export const ANTIGRAVITY_TOOLS_AGENT = 'local-ai-jay-tools';
+const TOOLS_AGENT_MD = `---
+name: ${ANTIGRAVITY_TOOLS_AGENT}
+description: Used by local-ai-jay when a client (such as VS Code Agent mode) supplies its own tools. Has no built-in tools; it calls the client's tools by writing tool_call blocks.
+tools: []
+subagent: false
+---
+You are an assistant whose tools are provided by the user's app. You have no built-in tools in this
+session. When the user's message lists tools, you act ONLY by writing the <tool_call> blocks it
+describes; the app runs them on the user's computer and returns the results. Never claim you lack tools.
+`;
+
+export function ensureAntigravityToolsAgent(home = os.homedir()) {
+  const file = path.join(home, '.gemini', 'config', 'agents', `${ANTIGRAVITY_TOOLS_AGENT}.md`);
+  let current = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch { /* not yet */ }
+  if (current !== TOOLS_AGENT_MD) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, TOOLS_AGENT_MD);
   }
   return file;
 }
@@ -207,15 +231,20 @@ export const antigravitySpec = {
   binEnv: 'LOCAL_AI_JAY_ANTIGRAVITY_BIN',
   models: ['default'],
   installHint: 'https://antigravity.google',
-  buildArgs({ model, dirs, access, stateDir }) {
+  buildArgs({ model, dirs, access, stateDir, toolMode }) {
     const args = [
       '--input-format', 'stream-json',
       '--output-format', 'stream-json',
       '--disable-slash-commands',
-      '--settings', antigravitySettingsFile(stateDir, access),
+      '--settings', antigravitySettingsFile(stateDir, access, toolMode),
     ];
     if (model) args.push('--model', model);
-    for (const d of dirs) args.push('--add-dir', d);
+    if (toolMode) {
+      ensureAntigravityToolsAgent();
+      args.push('--agent', ANTIGRAVITY_TOOLS_AGENT);
+    } else {
+      for (const d of dirs) args.push('--add-dir', d);
+    }
     return args;
   },
   // The prompt goes over stdin as one NDJSON message, never on the command line.
@@ -301,13 +330,15 @@ export function createCliProvider(spec, { env = process.env } = {}) {
       const bin = locate();
       if (!bin) throw new GatewayError(503, `${spec.label} isn't installed ("${spec.bin}" not on PATH)`, 'provider_unavailable');
       const prompt = buildPrompt(messages);
-      const cwd = settings.workdir || settings.workspace;
+      // With client-side tools the files live on the client, so run in the empty workspace.
+      const cwd = settings.toolMode ? settings.workspace : settings.workdir || settings.workspace;
       const args = spec.buildArgs({
         model: checkModelName(model),
         cwd,
         dirs: settings.allowedDirs || [],
         access: settings.access,
         stateDir: settings.stateDir || path.join(path.dirname(settings.workspace), 'state'),
+        toolMode: !!settings.toolMode,
       });
       const st = {};
       const lines = runLines({

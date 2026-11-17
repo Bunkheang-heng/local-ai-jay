@@ -7,6 +7,7 @@ import { GatewayError, Semaphore, safeEqual, isInside, realpathOrNull, localDay,
 import { parseModel } from './providers/index.js';
 import { validateMessages } from './prompt.js';
 import { pickParams, sseData, upstreamError } from './providers/openai-compat.js';
+import { functionTools, toolifyMessages, hasToolHistory, ToolCallStream } from './tools.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_BODY = 25 * 1024 * 1024;
@@ -79,8 +80,9 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
     return value;
   }
 
-  function settingsFor(workdir) {
+  function settingsFor(workdir, toolMode = false) {
     return {
+      toolMode,
       workspace: paths.workspace,
       stateDir: paths.state,
       allowedDirs: config.allowedDirs,
@@ -158,6 +160,12 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
       return proxyChat(single.provider, single.model, body, res, ac);
     }
 
+    // Text-only providers (CLIs, websites) get tool calling through the prompt; see tools.js.
+    const useTools = functionTools(body.tools).length > 0 && body.tool_choice !== 'none';
+    const messages = useTools || hasToolHistory(body.messages)
+      ? toolifyMessages(body.messages, { tools: useTools ? body.tools : [], toolChoice: body.tool_choice })
+      : body.messages;
+
     const id = `chatcmpl-${crypto.randomBytes(12).toString('hex')}`;
     const created = Math.floor(Date.now() / 1000);
     let headersSent = false;
@@ -195,25 +203,40 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
         let reasoning = '';
         let usage = null;
         let roleSent = false;
+        let calls = [];
+        const parser = useTools ? new ToolCallStream(body.tools) : null;
+        const sendDelta = (delta) => {
+          startStream();
+          if (!roleSent) { write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: '' }))}\n\n`); roleSent = true; }
+          write(`data: ${JSON.stringify(chunk(delta))}\n\n`);
+        };
         let release = () => {};
         try {
           if (provider.kind === 'cli' || provider.kind === 'web') release = await semaphoreFor(provider).acquire(ac.signal);
           const events = provider.chat({
-            messages: body.messages, model, signal: ac.signal, params: pickParams(body), settings: settingsFor(workdir),
+            messages, model, signal: ac.signal, params: pickParams(body), settings: settingsFor(workdir, useTools),
           });
           for await (const ev of events) {
             if (ev.type === 'usage') { usage = ev; continue; }
-            if (ev.type === 'final') { text = ev.text; continue; }
+            if (ev.type === 'final') { if (!parser) text = ev.text; continue; }
             if (ev.type !== 'text' && ev.type !== 'reasoning') continue;
             emitted = true;
-            if (ev.type === 'text') text += ev.text; else reasoning += ev.text;
-            if (stream) {
-              startStream();
-              if (!roleSent) { write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: '' }))}\n\n`); roleSent = true; }
-              const delta = ev.type === 'text' ? { content: ev.text } : { reasoning_content: ev.text };
-              write(`data: ${JSON.stringify(chunk(delta))}\n\n`);
+            if (ev.type === 'reasoning') {
+              reasoning += ev.text;
+              if (stream) sendDelta({ reasoning_content: ev.text });
+              continue;
             }
+            const piece = parser ? parser.push(ev.text) : ev.text;
+            if (!piece) continue;
+            text += piece;
+            if (stream) sendDelta({ content: piece });
           }
+          if (parser) {
+            const tail = parser.end();
+            if (tail.text) { text += tail.text; if (stream) sendDelta({ content: tail.text }); }
+            calls = tail.calls;
+          }
+          const finish = calls.length ? 'tool_calls' : 'stop';
           const ms = Date.now() - t0;
           const u = {
             prompt_tokens: usage?.inputTokens || 0,
@@ -222,21 +245,25 @@ export function createGateway({ config, store, registry, paths, version = '0.0.0
           u.total_tokens = u.prompt_tokens + u.completion_tokens;
           addRecent({
             at: new Date().toISOString(), model: publicModel, provider: provider.id, ok: true, status: 200, ms,
-            inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, stream, fallbackFrom: i ? candidates[0].provider.id : undefined,
+            inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, stream, fallbackFrom: i ? candidates[0].provider.id : undefined, toolCalls: calls.length || undefined,
           });
           if (stream) {
             startStream();
             if (!roleSent) write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: '' }))}\n\n`);
-            write(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+            if (calls.length) {
+              write(`data: ${JSON.stringify(chunk({ tool_calls: calls.map((c, index) => ({ index, ...c })) }))}\n\n`);
+            }
+            write(`data: ${JSON.stringify(chunk({}, finish))}\n\n`);
             if (wantUsage) write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: publicModel, choices: [], usage: u })}\n\n`);
             write('data: [DONE]\n\n');
             res.end();
           } else {
-            const message = { role: 'assistant', content: text };
+            const message = { role: 'assistant', content: calls.length && !text.trim() ? null : text };
+            if (calls.length) message.tool_calls = calls;
             if (reasoning) message.reasoning_content = reasoning;
             sendJson(res, 200, {
               id, object: 'chat.completion', created, model: publicModel,
-              choices: [{ index: 0, message, finish_reason: 'stop' }],
+              choices: [{ index: 0, message, finish_reason: finish }],
               usage: u,
             });
           }

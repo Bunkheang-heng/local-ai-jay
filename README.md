@@ -65,6 +65,18 @@ npx local-ai-jay ask -m gemini-web "Explain DNS like I'm five"
 > own profile in `~/.local-ai-jay/browser-profile`, separate from your everyday browser.
 > Needs Node 22+.
 
+## Tool calling (agents, VS Code Agent mode)
+
+Send OpenAI `tools` and every model can call them, including the CLIs and websites, which have no
+tool API of their own. API providers (SEA-LION, Groq, OpenAI, …) get the tools natively. For
+Antigravity, Claude Code, Codex and the Gemini website, local-ai-jay describes the tools in the
+prompt, the model answers with `<tool_call>{"name": …, "arguments": …}</tool_call>` blocks, and the
+client receives standard `tool_calls` with `finish_reason: "tool_calls"`, streamed or not. Tool
+results and earlier calls in the history are passed back the same way. While a client's tools are
+in play, Antigravity runs as a dedicated agent (`~/.gemini/config/agents/local-ai-jay-tools.md`)
+with its own file, command, MCP and web tools blocked, because those would act on the server
+machine, not on the client's.
+
 ## The console
 
 `http://127.0.0.1:3000` opens a chat app with a sidebar:
